@@ -6,3 +6,4 @@ PyYAML==6.0.3
 qrcode==8.2
 openvr==2.12.1401
 tuya-connector-python==0.1.2
+zeroconf==0.148.0

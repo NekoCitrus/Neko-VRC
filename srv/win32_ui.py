@@ -17,6 +17,7 @@ import qrcode
 from loguru import logger
 
 from srv.config_manager import format_endpoint, parse_endpoint, parse_parameter_lines, validate_config
+from srv import WAVEFORM_NAMES, WAVEFORMS
 from srv.steamvr_autostart import SteamVRAutoStartError, configure_steamvr_autostart
 
 
@@ -75,6 +76,7 @@ WM_APP = 0x8000
 WM_TRAY = WM_APP + 1
 WM_EVENTS = WM_APP + 2
 WM_AUTOSTART = WM_APP + 3
+WM_SHOW_EXISTING = WM_APP + 4
 
 WS_CHILD = 0x40000000
 WS_VISIBLE = 0x10000000
@@ -99,6 +101,10 @@ SW_RESTORE = 9
 BM_GETCHECK = 0x00F0
 BM_SETCHECK = 0x00F1
 BST_CHECKED = 1
+CBS_DROPDOWNLIST = 0x0003
+CB_ADDSTRING = 0x0143
+CB_SETCURSEL = 0x014E
+CB_GETCURSEL = 0x0147
 PBM_SETRANGE32 = 0x0406
 PBM_SETPOS = 0x0402
 MF_STRING = 0x0000
@@ -267,6 +273,7 @@ class DesktopApplication:
         self.large_icon = None
         self.small_icon = None
         self.loaded_icons = []
+        self._combo_buffers = []
         self.qr_matrix = []
         self._last_snapshot = None
 
@@ -317,6 +324,22 @@ class DesktopApplication:
         self.controls[key] = handle
         return handle
 
+    def _combo(self, key, values, selected, x, y, width, panel=None):
+        handle = self._create('COMBOBOX', '', WS_TABSTOP | CBS_DROPDOWNLIST, x, y, width, 180, panel=panel)
+        for value in values:
+            buffer = ctypes.create_unicode_buffer(value)
+            self._combo_buffers.append(buffer)
+            text_ptr = ctypes.cast(buffer, ctypes.c_void_p).value
+            user32.SendMessageW(handle, CB_ADDSTRING, 0, text_ptr)
+        index = values.index(selected) if selected in values else 0
+        user32.SendMessageW(handle, CB_SETCURSEL, index, 0)
+        self.controls[key] = handle
+        return handle
+
+    def _combo_value(self, key, values):
+        index = int(user32.SendMessageW(self.controls[key], CB_GETCURSEL, 0, 0))
+        return values[index] if 0 <= index < len(values) else values[0]
+
     def _button(self, text, control_id, x, y, width, height=30, panel=None):
         return self._create('BUTTON', text, WS_TABSTOP | BS_PUSHBUTTON, x, y, width, height, control_id, panel=panel)
 
@@ -354,12 +377,7 @@ class DesktopApplication:
         panel = 'general'
         self._create('BUTTON', '网络监听', BS_GROUPBOX, 150, 72, 575, 105, panel=panel)
         self._label('OSC / 分流入口', 172, 108, 150, 28, panel=panel)
-        relay = self.settings['relay']
-        endpoint = (
-            format_endpoint(relay['listen_host'], relay['listen_port'])
-            if relay['enabled']
-            else format_endpoint(self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
-        )
+        endpoint = format_endpoint(self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
         self._edit('listen_endpoint', endpoint, 335, 104, 360, 28, panel=panel)
 
         self._create('BUTTON', '安全与启动', BS_GROUPBOX, 150, 190, 575, 218, panel=panel)
@@ -393,13 +411,6 @@ class DesktopApplication:
         )
         self.controls['steamvr_status'] = self._label(steamvr_status, 195, 384, 500, 26, panel=panel)
 
-        self._create('BUTTON', 'UDP 端口分流', BS_GROUPBOX, 150, 422, 575, 200, panel=panel)
-        self._check('relay', '启用端口分流', relay['enabled'], 172, 458, 220, panel=panel)
-        self._label('VRCFT 目标', 172, 499, 150, 28, panel=panel)
-        self._edit('vrcft_endpoint', format_endpoint(relay['vrcft_host'], relay['vrcft_port']), 335, 495, 360, 28, panel=panel)
-        self._label('本程序内部目标', 172, 540, 150, 28, panel=panel)
-        self._edit('internal_endpoint', format_endpoint(relay['internal_host'], relay['internal_port']), 335, 536, 360, 28, panel=panel)
-        self._label('启用后，每个 UDP 数据包会原样发送到以上两个目标。', 172, 580, 520, 30, panel=panel)
 
     def _build_parameter_panel(self):
         panel = 'params'
@@ -426,7 +437,21 @@ class DesktopApplication:
             multiline=True,
             panel=panel,
         )
-        self._label('修改后点击顶部“保存并重启服务”才会生效。', 150, 612, 560, 30, panel=panel)
+        self._label('A 通道波形', 150, 612, 100, 28, panel=panel)
+        self._combo(
+            'waveform_a', WAVEFORM_NAMES,
+            self.settings['dglab3']['channel_a']['mode_config']['shock'].get('waveform', WAVEFORM_NAMES[0]),
+            250, 608, 170, panel=panel,
+        )
+        self._label('B 通道波形', 440, 612, 100, 28, panel=panel)
+        self._combo(
+            'waveform_b', WAVEFORM_NAMES,
+            self.settings['dglab3']['channel_b']['mode_config']['shock'].get('waveform', WAVEFORM_NAMES[0]),
+            540, 608, 170, panel=panel,
+        )
+        self._check('waveform_sync', '同步 AB 波形（以 A 为准）',
+                    self.settings['dglab3'].get('waveform_sync', False), 150, 650, 300, panel=panel)
+        self._label('修改后点击顶部“保存并重启服务”才会生效。', 150, 682, 560, 30, panel=panel)
 
     def _build_debug_panel(self):
         panel = 'debug'
@@ -496,18 +521,7 @@ class DesktopApplication:
         settings = copy.deepcopy(self.settings)
         basic = copy.deepcopy(self.basic_settings)
         listen_host, listen_port = parse_endpoint(self._get_text('listen_endpoint'))
-        vrcft_host, vrcft_port = parse_endpoint(self._get_text('vrcft_endpoint'))
-        internal_host, internal_port = parse_endpoint(self._get_text('internal_endpoint'))
         settings['osc'].update(listen_host=listen_host, listen_port=listen_port)
-        settings['relay'].update(
-            enabled=self._is_checked('relay'),
-            listen_host=listen_host,
-            listen_port=listen_port,
-            vrcft_host=vrcft_host,
-            vrcft_port=vrcft_port,
-            internal_host=internal_host,
-            internal_port=internal_port,
-        )
         settings['chatbox']['enable'] = self._is_checked('chatbox')
         settings['general']['run_in_background'] = self._is_checked('background')
         settings['general']['steamvr_auto_start'] = self._is_checked('steamvr_auto_start')
@@ -515,6 +529,14 @@ class DesktopApplication:
         basic['dglab3']['channel_b']['strength_limit'] = int(self._get_text('strength_b'))
         basic['dglab3']['channel_a']['avatar_params'] = parse_parameter_lines(self._get_text('params_a'))
         basic['dglab3']['channel_b']['avatar_params'] = parse_parameter_lines(self._get_text('params_b'))
+        sync_waveform = self._is_checked('waveform_sync')
+        waveform_a = self._combo_value('waveform_a', WAVEFORM_NAMES)
+        waveform_b = waveform_a if sync_waveform else self._combo_value('waveform_b', WAVEFORM_NAMES)
+        settings['dglab3']['waveform_sync'] = sync_waveform
+        settings['dglab3']['channel_a']['mode_config']['shock']['waveform'] = waveform_a
+        settings['dglab3']['channel_b']['mode_config']['shock']['waveform'] = waveform_b
+        settings['dglab3']['channel_a']['mode_config']['shock']['wave'] = WAVEFORMS[waveform_a]
+        settings['dglab3']['channel_b']['mode_config']['shock']['wave'] = WAVEFORMS[waveform_b]
         validate_config(settings, basic)
         return settings, basic
 
@@ -782,6 +804,9 @@ class DesktopApplication:
             return 0
         if message == WM_AUTOSTART:
             self._start_action('start')
+            return 0
+        if message == WM_SHOW_EXISTING:
+            self._restore()
             return 0
         if message == WM_COMMAND:
             command = int(wparam) & 0xFFFF

@@ -40,13 +40,14 @@ DEFAULT_BASIC_SETTINGS = {
 }
 
 _DEFAULT_WAVE = json.dumps(['0A0A0A0A64646464'] * 10, separators=(',', ':'))
+_DEFAULT_WAVEFORM = '呼吸'
 
 DEFAULT_SETTINGS = {
     'SERVER_IP': None,
     'dglab3': {
         channel: {
             'mode_config': {
-                'shock': {'duration': 2, 'wave': _DEFAULT_WAVE},
+                'shock': {'duration': 2, 'wave': _DEFAULT_WAVE, 'waveform': _DEFAULT_WAVEFORM},
                 'distance': {'freq_ms': 10},
                 'trigger_range': {'bottom': 0.0, 'top': 1.0},
             },
@@ -61,6 +62,10 @@ DEFAULT_SETTINGS = {
     'osc': {
         'listen_host': '127.0.0.1',
         'listen_port': 9001,
+    },
+    'oscquery': {
+        'listen_host': '127.0.0.1',
+        'listen_port': 8801,
     },
     'relay': {
         'enabled': False,

@@ -36,7 +36,7 @@ from srv.connector.coyotev3ws import DGConnection
 from srv.connector.coyotev4ws import DGV4Connection
 from srv.handler.machine_handler import TuYaConnection, TuyaHandler
 from srv.handler.shock_handler import ShockHandler
-from srv.udp_relay import create_udp_relay
+from srv.oscquery import OSCQueryService
 
 
 BUNDLE_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
@@ -298,6 +298,7 @@ class DeviceRuntime:
         self.handlers = []
         self.chatbox_manager = None
         self.relay_packets = 0
+        self.oscquery = None
 
     def _emit(self, event):
         if self.event_callback is not None:
@@ -382,7 +383,6 @@ class DeviceRuntime:
         self.loop = asyncio.get_running_loop()
         self.stop_event = asyncio.Event()
         osc_transport = None
-        relay_transport = None
         chatbox_task = None
         try:
             dispatcher = self._build_dispatcher()
@@ -393,20 +393,9 @@ class DeviceRuntime:
             if self.chatbox_manager.enabled:
                 chatbox_task = asyncio.create_task(self._chatbox_task())
 
-            relay = self.settings['relay']
-            if relay['enabled']:
-                osc_address = (relay['internal_host'], relay['internal_port'])
-                relay_transport, _ = await create_udp_relay(
-                    self.loop,
-                    (relay['listen_host'], relay['listen_port']),
-                    (
-                        (relay['vrcft_host'], relay['vrcft_port']),
-                        (relay['internal_host'], relay['internal_port']),
-                    ),
-                    on_packet=self._relay_packet,
-                )
-            else:
-                osc_address = (self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
+            osc_address = (self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
+            self.oscquery = OSCQueryService(self.settings)
+            self.oscquery.start()
 
             osc_server = AsyncIOOSCUDPServer(osc_address, dispatcher, self.loop)
             osc_transport, _ = await osc_server.create_serve_endpoint()
@@ -438,8 +427,9 @@ class DeviceRuntime:
                 self.chatbox_manager.cleanup()
             if osc_transport is not None:
                 osc_transport.close()
-            if relay_transport is not None:
-                relay_transport.close()
+            if self.oscquery is not None:
+                self.oscquery.stop()
+                self.oscquery = None
             self._emit({'type': 'service', 'state': 'stopped'})
 
     def start(self, timeout=10):
@@ -601,6 +591,17 @@ def config_save():
 
 
 def main():
+    import ctypes
+
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Local\\ShockingVRChat.SingleInstance')
+    if not mutex:
+        raise ctypes.WinError()
+    if ctypes.windll.kernel32.GetLastError() == 183:
+        existing = ctypes.windll.user32.FindWindowW('ShockingVRChatDesktopWindow', None)
+        if existing:
+            ctypes.windll.user32.PostMessageW(existing, 0x8004, 0, 0)
+        ctypes.windll.kernel32.CloseHandle(mutex)
+        return
     config_init()
     from srv.win32_ui import DesktopApplication
 
