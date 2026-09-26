@@ -7,7 +7,7 @@ openvr_data = collect_data_files('openvr', includes=['*.dll'])
 
 
 a = Analysis(
-    ['shocking_vrchat.py'],
+    ['neko_vrc.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='shocking_vrchat',
+    name='Neko-VRC',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

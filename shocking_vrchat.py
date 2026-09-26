@@ -36,7 +36,8 @@ from srv.connector.coyotev3ws import DGConnection
 from srv.connector.coyotev4ws import DGV4Connection
 from srv.handler.machine_handler import TuYaConnection, TuyaHandler
 from srv.handler.shock_handler import ShockHandler
-from srv.oscquery import OSCQueryService
+from srv.oscquery import OSCQueryAvatarSnapshot, OSCQueryService
+from srv.sps_depth import SPS_PLUG, SPS_SOCKET, SPSZone, find_avatar_sps_config
 
 
 BUNDLE_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
@@ -204,18 +205,49 @@ def build_status_response():
         for connection in srv.get_ws_connections()
         if getattr(connection, 'is_device_ready', lambda: True)()
     )
+    device_entries = []
+    for connection in connections:
+        for state in connection_device_states(connection):
+            device_entries.append({
+                'type': 'shock',
+                'device': {
+                    'COYOTE_020': 'coyotev2',
+                    'COYOTE_030': 'coyotev3',
+                    'OVC_1': 'opossum',
+                }.get(state['device_type'], 'coyotev3'),
+                'attr': {
+                    'strength': dict(state['strength']),
+                    'uuid': connection.uuid,
+                    'slot_id': state['slot_id'],
+                },
+            })
     return {
         'healthy': 'ok',
         'service': ACTIVE_CONTROLLER.state if ACTIVE_CONTROLLER else 'stopped',
-        'devices': [
-            {
-                'type': 'shock',
-                'device': 'coyotev3',
-                'attr': {'strength': dict(conn.strength), 'uuid': conn.uuid},
-            }
-            for conn in connections[:1]
-        ],
+        'devices': device_entries,
     }
+
+
+def connection_device_states(connection):
+    getter = getattr(connection, 'get_device_states', None)
+    if getter is not None:
+        return getter()
+    device_type = getattr(connection, 'device_type', None) or 'COYOTE_030'
+    kind = 'opossum' if device_type == 'OVC_1' else 'coyote'
+    strength_max = dict(getattr(connection, 'strength_max', {'A': 200, 'B': 200}))
+    get_upper = getattr(connection, 'get_upper_strength', None)
+    return ({
+        'slot_id': getattr(connection, 'slot_id', None) or connection.uuid,
+        'device_type': device_type,
+        'device_kind': kind,
+        'device_name': getattr(connection, 'device_name', None),
+        'strength': dict(connection.strength),
+        'strength_max': strength_max,
+        'upper_strength': {
+            channel: get_upper(channel) if get_upper is not None else strength_max[channel]
+            for channel in ('A', 'B')
+        },
+    },)
 
 
 def submit_to_async_loop(coroutine, timeout=10):
@@ -299,6 +331,7 @@ class DeviceRuntime:
         self.chatbox_manager = None
         self.relay_packets = 0
         self.oscquery = None
+        self.current_avatar_id = ''
 
     def _emit(self, event):
         if self.event_callback is not None:
@@ -311,19 +344,22 @@ class DeviceRuntime:
         dispatcher = Dispatcher()
         self.handlers = []
         self.chatbox_manager = AdvancedChatboxManager(self.settings)
-        for channel in ('A', 'B'):
-            channel_name = f'channel_{channel.lower()}'
-            handler = ShockHandler(
-                SETTINGS=self.settings,
-                DG_CONN=DGConnection,
-                channel_name=channel,
-                event_callback=self._emit,
-            )
-            handler.set_chatbox_manager(self.chatbox_manager)
-            self.handlers.append(handler)
-            for param in self.settings['dglab3'][channel_name]['avatar_params']:
-                dispatcher.map(param, handler.osc_handler)
-                logger.info(f'通道 {channel} 监听：{param}')
+        for device_kind in ('coyote', 'opossum'):
+            for channel in ('A', 'B'):
+                handler = ShockHandler(
+                    SETTINGS=self.settings,
+                    DG_CONN=DGConnection,
+                    channel_name=channel,
+                    device_kind=device_kind,
+                    event_callback=self._emit,
+                )
+                handler.set_chatbox_manager(self.chatbox_manager)
+                self.handlers.append(handler)
+                for address, signal in handler.osc_bindings():
+                    dispatcher.map(address, handler.osc_handler, signal)
+                    logger.info('{} 通道 {} 监听 SPS：{}', device_kind, channel, address)
+
+        dispatcher.map('/avatar/change', self._avatar_change_handler)
 
         if 'machine' in self.settings and 'tuya' in self.settings['machine']:
             tuya = self.settings['machine']['tuya']
@@ -338,13 +374,104 @@ class DeviceRuntime:
                 dispatcher.map(param, handler.osc_handler)
         return dispatcher
 
+    def _avatar_change_handler(self, _address, *args):
+        if len(args) != 1 or not isinstance(args[0], str):
+            logger.warning('Ignored invalid /avatar/change OSC message: {}', args)
+            return
+        avatar_id = args[0].strip()
+        if self.oscquery is not None:
+            self.oscquery.request_avatar_refresh(avatar_id)
+        else:
+            self._apply_avatar_snapshot(OSCQueryAvatarSnapshot(avatar_id, ()))
+
+    def _oscquery_avatar_callback(self, snapshot):
+        if self.loop is not None and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self._apply_avatar_snapshot, snapshot)
+
+    @staticmethod
+    def _query_zones(parameter_paths):
+        zones = {SPS_SOCKET: set(), SPS_PLUG: set()}
+        for path in parameter_paths:
+            parts = str(path).strip('/').split('/')
+            if len(parts) < 6 or parts[:3] != ['avatar', 'parameters', 'OGB']:
+                continue
+            if parts[3] == 'Orf':
+                zones[SPS_SOCKET].add(parts[4])
+            elif parts[3] == 'Pen':
+                zones[SPS_PLUG].add(parts[4])
+        return zones
+
+    def _apply_avatar_snapshot(self, snapshot):
+        avatar_id = snapshot.avatar_id
+        if avatar_id != self.current_avatar_id:
+            for handler in self.handlers:
+                if isinstance(handler, ShockHandler):
+                    handler.reset_for_avatar_change()
+            self.current_avatar_id = avatar_id
+        avatar = find_avatar_sps_config(avatar_id, APP_DIR)
+        local_zones = {}
+        if avatar is not None:
+            local_zones.update({
+                (SPS_SOCKET, item.zone_id): item
+                for item in avatar.sockets
+            })
+            local_zones.update({
+                (SPS_PLUG, item.zone_id): item
+                for item in avatar.plugs
+            })
+        if snapshot.endpoint:
+            query_zones = self._query_zones(snapshot.parameter_paths)
+            sockets = tuple(
+                local_zones.get(
+                    (SPS_SOCKET, zone_id),
+                    SPSZone(SPS_SOCKET, zone_id, zone_id),
+                )
+                for zone_id in sorted(query_zones[SPS_SOCKET], key=str.casefold)
+            )
+            plugs = tuple(
+                local_zones.get(
+                    (SPS_PLUG, zone_id),
+                    SPSZone(SPS_PLUG, zone_id, zone_id),
+                )
+                for zone_id in sorted(query_zones[SPS_PLUG], key=str.casefold)
+            )
+            source = 'OSCQuery'
+        else:
+            sockets = avatar.sockets if avatar else ()
+            plugs = avatar.plugs if avatar else ()
+            source = '/avatar/change 兜底'
+        event = {
+            'type': 'avatar',
+            'avatar_id': avatar_id,
+            'avatar_name': avatar.avatar_name if avatar else avatar_id,
+            'found': bool(snapshot.endpoint or avatar is not None),
+            'source': source,
+            'sockets': [
+                {'zone_id': item.zone_id, 'label': item.label}
+                for item in sockets
+            ],
+            'plugs': [
+                {'zone_id': item.zone_id, 'label': item.label}
+                for item in plugs
+            ],
+        }
+        self._emit(event)
+        logger.info(
+            'Current Avatar from {}: {} ({})，Socket {} / Plug {}',
+            source,
+            event['avatar_name'],
+            avatar_id,
+            len(sockets),
+            len(plugs),
+        )
+
     def _relay_packet(self, _size, _address):
         self.relay_packets += 1
 
     async def _websocket_handler(self, connection):
         if srv.get_ws_connections():
             await connection.close(code=1008, reason='Only one device is supported')
-            logger.warning('已拒绝第二台郊狼设备连接。')
+            logger.warning('已拒绝第二个 DG-LAB APP 连接。')
             return
         request_path = getattr(getattr(connection, 'request', None), 'path', '/')
         parsed = urlsplit(request_path)
@@ -376,7 +503,8 @@ class DeviceRuntime:
 
     async def _chatbox_task(self):
         while True:
-            await self.chatbox_manager.update_chatbox(srv.get_ws_connections()[:1], self.handlers)
+            connections = srv.get_ws_connections()[:1]
+            await self.chatbox_manager.update_chatbox(connections, self.handlers)
             await asyncio.sleep(0.5)
 
     async def _main(self):
@@ -394,7 +522,10 @@ class DeviceRuntime:
                 chatbox_task = asyncio.create_task(self._chatbox_task())
 
             osc_address = (self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
-            self.oscquery = OSCQueryService(self.settings)
+            self.oscquery = OSCQueryService(
+                self.settings,
+                avatar_callback=self._oscquery_avatar_callback,
+            )
             self.oscquery.start()
 
             osc_server = AsyncIOOSCUDPServer(osc_address, dispatcher, self.loop)
@@ -459,27 +590,45 @@ class DeviceRuntime:
             connection
             and getattr(connection, 'is_device_ready', lambda: True)()
         )
-        channels = {}
+        device_states = connection_device_states(connection) if device_ready else ()
+        device_channels = {'coyote': {}, 'opossum': {}}
         for handler in self.handlers:
             if not isinstance(handler, ShockHandler):
                 continue
             info = handler.get_mode_info()
-            upper = connection.get_upper_strength(handler.channel) if connection else 0
-            channels[handler.channel] = {
+            device_strengths = []
+            for state in device_states:
+                if state['device_kind'] != handler.device_kind:
+                    continue
+                device_strengths.append({
+                    'slot_id': state['slot_id'],
+                    'device_name': state['device_name'],
+                    'actual_strength': int(state['strength'].get(handler.channel, 0)),
+                    'upper_strength': int(state['upper_strength'].get(handler.channel, 0)),
+                })
+            primary = next(iter(device_strengths), {'actual_strength': 0, 'upper_strength': 0})
+            device_channels[handler.device_kind][handler.channel] = {
                 **info,
-                'actual_strength': int(round(upper * info['strength_percentage'])),
-                'upper_strength': upper,
+                'actual_strength': primary['actual_strength'],
+                'upper_strength': primary['upper_strength'],
+                'device_strengths': device_strengths,
             }
+        # Keep the original key as a compatibility view for API consumers.
+        channels = device_channels['coyote']
         return {
             'connected': device_ready,
             'app_connected': connection is not None,
             'protocol': getattr(connection, 'protocol_version', '') if connection else '',
+            'device_type': getattr(connection, 'device_type', '') if connection else '',
+            'device_name': getattr(connection, 'device_name', '') if connection else '',
+            'devices': list(device_states),
             'device_id': (
                 getattr(connection, 'slot_id', None) or connection.uuid
                 if device_ready else ''
             ),
             'relay_packets': self.relay_packets,
             'channels': channels,
+            'device_channels': device_channels,
         }
 
 
@@ -577,7 +726,7 @@ def config_init(config_dir=None):
     CONFIG_FILENAME_BASIC = CONFIG_MANAGER.path
     SERVER_IP = SETTINGS.get('SERVER_IP') or detect_current_ip(SETTINGS)
     logger.remove()
-    log_path = CONFIG_MANAGER.config_dir / 'shocking-vrchat.log'
+    log_path = CONFIG_MANAGER.config_dir / 'neko-vrc.log'
     logger.add(log_path, level=SETTINGS.get('log_level', 'INFO'), rotation='2 MB', retention=3, encoding='utf-8')
     if sys.stderr is not None:
         logger.add(sys.stderr, level=SETTINGS.get('log_level', 'INFO'))
@@ -593,11 +742,11 @@ def config_save():
 def main():
     import ctypes
 
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Local\\ShockingVRChat.SingleInstance')
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Local\\NekoVRC.SingleInstance')
     if not mutex:
         raise ctypes.WinError()
     if ctypes.windll.kernel32.GetLastError() == 183:
-        existing = ctypes.windll.user32.FindWindowW('ShockingVRChatDesktopWindow', None)
+        existing = ctypes.windll.user32.FindWindowW('NekoVRCDesktopWindow', None)
         if existing:
             ctypes.windll.user32.PostMessageW(existing, 0x8004, 0, 0)
         ctypes.windll.kernel32.CloseHandle(mutex)
@@ -618,6 +767,6 @@ if __name__ == '__main__':
         logger.error(traceback.format_exc())
         if sys.platform == 'win32':
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, traceback.format_exc(), 'ShockingVRChat 启动失败', 0x10)
+            ctypes.windll.user32.MessageBoxW(None, traceback.format_exc(), 'Neko-VRC 启动失败', 0x10)
         else:
             raise

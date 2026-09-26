@@ -1,1 +1,1 @@
-"""Automated tests for Shocking VRChat."""
+"""Automated tests for Neko-VRC."""

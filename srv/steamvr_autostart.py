@@ -30,7 +30,7 @@ def current_launch_target():
     windowed = executable.with_name('pythonw.exe')
     if windowed.exists():
         executable = windowed
-    script = Path(__file__).resolve().parents[1] / 'shocking_vrchat.py'
+    script = Path(__file__).resolve().parents[1] / 'neko_vrc.py'
     return executable, f'"{script}"'
 
 
@@ -42,12 +42,12 @@ def build_manifest(executable, arguments=''):
         'is_dashboard_overlay': True,
         'strings': {
             'en_us': {
-                'name': 'ShockingVRChat',
-                'description': 'VRChat OSC controller for DG-LAB Coyote devices',
+                'name': 'Neko-VRC',
+                'description': 'VRChat OSC controller for DG-LAB Coyote and Opossum devices',
             },
             'zh_cn': {
-                'name': 'ShockingVRChat',
-                'description': '用于 DG-LAB 郊狼设备的 VRChat OSC 控制程序',
+                'name': 'Neko-VRC',
+                'description': '用于 DG-LAB 郊狼和负鼠设备的 VRChat OSC 控制程序',
             },
         },
     }

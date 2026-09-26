@@ -1,4 +1,4 @@
-# Shocking VRChat
+# Neko-VRC
 <img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/636a17c1-cfc8-4a83-910e-6d861db08d8b" />
 <img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/1aa97c51-aa7f-43b4-a7c1-a790108d9daf" />
 <img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/c10c9228-88d1-4488-bee5-c0e53f47433b" />
@@ -7,7 +7,7 @@
 
 [English version](README_en.md)
 
-一个小工具，通过接受 VRChat Avatar 的 OSC 消息，使用 Websocket 协议联动郊狼 DG-LAB 3.0 ，达到游戏中Avatar被别人/自己触摸，就会被郊狼电的效果。
+一个通过 VRChat OSC 读取 Avatar SPS/OGB 插入深度，并联动郊狼 DG-LAB 3.0 或负鼠振动控制器的小工具。
 
 我们的 VRChat 群组： [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/SHOCK.2911)
 
@@ -16,22 +16,22 @@
 
 ## 使用方式
 
-1. 前往 [本项目Release](https://github.com/VRChatNext/Shocking-VRChat/releases) 下载最新版本的 Shocking-VRChat 工具
+1. 前往 [本项目 Release](https://github.com/NekoCitrus/Neko-VRC/releases) 下载最新版本的 Neko-VRC
 2. 运行 exe。程序会直接打开轻量桌面窗口并自动启动后台服务。
-3. 在“基本设置”中确认 OSC 监听地址与 A/B 通道最大强度；在“A/B 参数”中每行填写一个 `/avatar/parameters/...`。
+3. 在“郊狼 A/B”和“负鼠 A/B”中，分别为各自的 A/B 通道设置 Socket 或 Plug、部位、波形和强度上限。
 4. 点击“保存并重启服务”。首次联网时如弹出 Windows 防火墙提示，请选择允许。
-5. 启动最新版 DG-LAB APP，使用 Socket 控制功能扫描窗口右侧二维码。二维码默认使用官方推荐的 Socket V4 协议，同时保留旧版 V3 连接兼容。
+5. 启动最新版 DG-LAB 4 APP，在 APP 内用蓝牙连接郊狼或负鼠，再用 Socket 控制扫描程序二维码。
 6. 如勾选“关闭主窗口后继续在系统托盘运行”，关闭窗口不会停止服务；可从托盘菜单重新打开或退出。
 
 ## 桌面窗口
 
-- **基本设置**：编辑 `127.0.0.1:9001` 形式的监听地址、A/B 强度上限、Chatbox、后台运行与 SteamVR 跟随启动开关。
-- **A/B 参数**：每行一个 Avatar 参数，支持通配符 `*`、批量粘贴和自动去重。
-- **运行调试**：显示单台郊狼的连接状态、当前触发参数、OSC 原始值、映射百分比与实际发送强度。状态栏会区分“APP 未连接”“APP 已连接但等待蓝牙设备”和“郊狼已连接”。
+- **基本设置**：编辑 Chatbox、后台运行与 SteamVR 跟随启动开关。设备由 DG-LAB 4 APP 通过 Socket V4 上报，程序通过 OSCQuery 供 VRChat 自动发现。
+- **郊狼 A/B**：郊狼 A/B 各自设置 SPS 触发、部位、波形和强度上限；上限与 `intensityMax` 取较小值。
+- **负鼠 A/B**：负鼠 A/B 也有完全独立的触发、部位、波形和强度上限。
+- **运行调试**：显示设备连接、触发方式、选择范围、当前触发部位、深度与设备通道强度。
 - **版权信息**：显示项目、代码来源、前端贡献者与开源许可。
-- **UDP 分流**：启用后把入口数据包原样转发到 VRCFT（默认 `127.0.0.1:9011`）和本程序内部监听（默认 `127.0.0.1:9021`）。
 
-程序仅接受一台郊狼设备连接，第二台设备会被拒绝。
+程序当前接受一个 DG-LAB APP 连接，但会同时控制该 APP 上报的所有受支持郊狼与负鼠槽位。
 
 ### 跟随 SteamVR 启动
 
@@ -44,58 +44,46 @@
 配置固定保存在：
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v0.3.yaml
+%APPDATA%\ShockingVRChat\settings-v0.8.yaml
 ```
 
-日志保存在同目录的 `shocking-vrchat.log`。从 v0.2 升级时，如果新配置不存在，程序会自动读取 exe/源码旁的 `settings-v0.2.yaml` 和 `settings-advanced-v0.2.yaml`，迁移到新目录并保留旧文件。
+日志保存在同目录的 `neko-vrc.log`。为兼容旧版本，配置目录继续使用 `%APPDATA%\ShockingVRChat`。首次运行 v0.8 时会迁移 v0.7 及更旧配置；旧的共享 SPS 设置会复制为郊狼和负鼠各自的初始 A/B 设置。
 
-一般设置和 A/B 参数建议直接在窗口修改。工作模式、触发范围、波形、WebSocket 或 Web 服务端口等高级选项仍可在 YAML 中修改；手动修改 YAML 后请从托盘退出程序并重新打开。
+## 设备控制方式
 
-## 工作模式解释
+郊狼与负鼠都经同一条 DG-LAB 4 APP Socket V4 连接控制，但是 APP 将每台主机作为独立 `slotId` 上报。程序会同时保留所有 `COYOTE_020` / `COYOTE_030` 和 `OVC_1` 槽位，分别计算强度并按槽位发送任务。负鼠波形会自动转为 OVC 所用的固定前缀与四个振动强度字节。参见 [DG-LAB 官方 dglab-kit](https://github.com/dungeonlab-open/dglab-kit)。
 
-### distance 距离模式
+一般设置，以及郊狼/负鼠各自的 A/B 触发、部位、波形和强度上限，建议直接在窗口修改。WebSocket 或 Web 服务端口等高级选项仍可在 YAML 中修改；手动修改 YAML 后请从托盘退出程序并重新打开。
 
-- 根据与触发区域中心的距离控制波形强度
-- 越接近中心，强度越强
-- 距离模式下 trigger_range 的含义
-    - 当接收到的 OSC 数据大于 bottom 时，开始线性变化波形强度，上界为 top
-    - 当数据达到或超过 top 参数后，以最大强度输出
-    - 建议 bottom 设置为 0 或较小数字
-    - 建议 top 设置为 1.0 以获得最大动态范围
+## SPS 触发方式
 
-### shock 电击模式
+每个 A/B 通道只能使用以下一种方式：
 
-- 触发后电击固定时长（默认：2秒）
-- 如果一直被触碰，会电击到触摸离开后的固定时长
-- 电击模式下 trigger_range 的含义
-    - 当接收到的 OSC 数据大于 bottom 时，触发电击
-    - top 参数在 shock 模式被忽略
+- **SPS Socket 被插入深度**：读取 `OGB/Orf/<部位>` 的 Root/Tip 数据，按 OGB 算法估算插入深度。
+- **SPS Plug 插入深度**：读取 `OGB/Pen/<部位>` 的 `PenSelf/PenOthers` 深度。
+
+每种方式都可选择一个指定部位，或选择“任何当前正在触发的”部位；后者会取所有当前触发部位中的最大深度。程序会主动发现 VRChat 的 OSCQuery 服务并查询 `/avatar`，从当前参数树读取 Avatar ID 与 SPS 部位；`/avatar/change` 仅用于要求立即刷新，查询失败时才作为兜底。对应 ID 的本地 OSC JSON 只用于补充友好名称。
+
+两种方式最终都得到 `0～1` 的深度，并线性缩放各已连接主机的波形幅值。旧的自定义参数列表、distance 模式、shock 模式和 `trigger_range` 已移除。
 
 
 ## 配置文件参考
 
-配置文件格式为 YAML，当前版本为 `v0.3`。窗口编辑的 A/B 参数位于 `channels.dglab3`，其他设置位于 `settings`。
+配置文件格式为 YAML，当前版本为 `v0.8`。郊狼和负鼠的 A/B 设置分别位于 `channels.dglab3.coyote` 和 `channels.dglab3.opossum`。
 
 ```yaml
-version: v0.3
+version: v0.8
 channels:
-  version: v0.3
+  version: v0.8
   dglab3:
-    channel_a:
-      avatar_params:
-      # 此处填写 OSC 监听参数组，可以使用通配符 * 匹配任意字符串
-      - /avatar/parameters/pcs/contact/enterPass
-      - /avatar/parameters/Shock/wildcard/*
-      mode: distance
-      strength_limit: 100 # 与郊狼 APP 上限取较小值
-    channel_b:
-      avatar_params:
-      - /avatar/parameters/lms-penis-proximityA*
-      - /avatar/parameters/ShockB2/some/param
-      mode: shock
-      strength_limit: 100
+    coyote:
+      channel_a: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
+      channel_b: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
+    opossum:
+      channel_a: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
+      channel_b: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
 settings:
-  version: v0.3
+  version: v0.8
   osc:
     listen_host: 127.0.0.1
     listen_port: 9001
@@ -113,40 +101,11 @@ settings:
 
 ## 模型参数配置
 
-- 程序内部流转处理的参数为 0 ~ 1 之间的 float
-- 支持输入的参数类型为 float、int、bool
-    - float，int ：小于 0 会被视为 0，大于 1 会被视为 1
-    - bool ：True 为 1，False 为 0
-- 其他参数类型会报错
-
-## 常见参数
-
-> 本部分请协助补充描述与解释。
-
-- float
-  - /avatar/parameters/pcs/contact/enterPass
-    - 最常用，位于pcs触发入口处，可自动切换跟随被触发的位置
-  - /avatar/parameters/pcs/contact/proximityA
-  - /avatar/parameters/pcs/contact/proximityB
-  - /avatar/parameters/pcs/contact/slide
-    - 不推荐使用，pcs开启后前后移动会触发很多次
-  - /avatar/parameters/pcs/smash-intensity
-  - /avatar/parameters/pcs/sps/pussy
-    - 如果需要仅通过指定位置触发，可尝试 pcs/sps 下的参数，不会跟随auto mode位置变化
-  - /avatar/parameters/pcs/sps/ass
-  - /avatar/parameters/pcs/sps/boobs
-  - /avatar/parameters/pcs/sps/mouth
-  - /avatar/parameters/pcs/sps/penis*
-  - /avatar/parameters/lms-penis-proximityA*
-    - 通过 LMS 触发可以使用的参数
-- bool
-  - /avatar/parameters/pcs/smash-intense
-  - /avatar/parameters/pcs/contact/in
-  - /avatar/parameters/pcs/contact/out
-  - /avatar/parameters/pcs/contact/hit
-  - /avatar/parameters/lms-stroke-in
-  - /avatar/parameters/lms-stroke-out*
-  - /avatar/parameters/lms-stroke-smash
+- Avatar 必须包含兼容的 SPS/OGB 参数。
+- Socket 参数路径应以 `/avatar/parameters/OGB/Orf/` 开头。
+- Plug 参数路径应以 `/avatar/parameters/OGB/Pen/` 开头。
+- 程序会从 `/avatar/change` 对应的 OSC Avatar JSON 中提取部位列表；下拉框中的 `*` 表示“任何当前正在触发的部位”，不再接受手工 OSC 路径。
+- 如果下拉列表为空，请先在 VRChat 中切换到目标 Avatar，并确认 VRChat 已生成对应的 OSC JSON。
 
 ## 高级设置参考
 
@@ -155,33 +114,16 @@ settings:
 ```yaml
 SERVER_IP: null # 为 null 时程序将尝试自动获取本机 IP
 dglab3:
-  channel_a: # 通道 A 配置
-    mode_config:   # 工作模式配置
-      distance:
-      # 该项目下的参数仅对 distance 距离模式生效
-        freq_ms: 10 
-        # 生成波形的频率（间隔毫秒），推荐 10 
-        # 详细请参考 DG-LAB-OPENSOURCE 蓝牙协议V3 的波形部分
-      shock:
-      # 该项目下的参数仅对 shock 电击模式生效
-        duration: 2
-        # 触发后的电击时长
-        wave: '["0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464"]'
-        # 电击波形
-      trigger_range:
-      # 触发阈值设置，对所有模式生效，范围 0 ~ 1
-        bottom: 0.0 # OSC 回报参数触发下界（低于视为 0%）
-        top: 0.8    # OSC 回报参数触发上界（超过视为 100%）
-  channel_b: # 通道 B 配置，参数设置与 A 通道相同
-    mode_config:
-      distance:
-        freq_ms: 10
-      shock:
-        duration: 2
-        wave: '["0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464"]'
-      trigger_range:
-        bottom: 0.1
-        top: 0.8
+  coyote:
+    channel_a: # 郊狼通道 A 配置
+      depth: {freq_ms: 10, waveform: 呼吸}
+    channel_b: # 郊狼通道 B 配置
+      depth: {freq_ms: 10, waveform: 呼吸}
+  opossum:
+    channel_a: # 负鼠通道 A 配置
+      depth: {freq_ms: 10, waveform: 呼吸}
+    channel_b: # 负鼠通道 B 配置
+      depth: {freq_ms: 10, waveform: 呼吸}
 general: # 通用配置
   run_in_background: true
   steamvr_auto_start: false # 跟随 SteamVR 启动；建议通过窗口修改
@@ -192,7 +134,7 @@ log_level: INFO # 日志等级，诊断问题时可以改为 DEBUG
 osc: # OSC 服务配置
   listen_host: 127.0.0.1 # 如果 VRChat 在其他主机运行，请改为 0.0.0.0，并给 VRChat 正确配置 osc 启动命令行参数。
   listen_port: 9001
-version: v0.3 # 配置文件版本
+version: v0.8 # 配置文件版本
 web_server: # Web 服务器配置
   listen_host: 127.0.0.1 # 如果需要从其他主机打开网页扫码，请改为 0.0.0.0
   listen_port: 8800
@@ -227,37 +169,32 @@ api:
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-build.txt
 python -m unittest discover -v
-pyinstaller --clean --noconfirm shocking_vrchat.spec
+pyinstaller --clean --noconfirm neko_vrc.spec
 ```
 
-PyInstaller 生成无控制台的单文件 `dist\shocking_vrchat.exe`，配置不会写在 exe 旁，而是固定写入 `%APPDATA%\ShockingVRChat\`。
+PyInstaller 生成无控制台的单文件 `dist\Neko-VRC.exe`，配置不会写在 exe 旁，而是固定写入兼容目录 `%APPDATA%\ShockingVRChat\`。
 
 ## FAQ
 
 ### 是否有逃生通道
 
-- 有，可以按一下郊狼的任意一侧肩键按钮，此时 A B 通道强度会被设置为 0。
+- 郊狼可以按一下任意一侧肩键，此时 A/B 通道强度会被设置为 0。负鼠请使用 APP 停止输出或断开设备。
 - 当程序检测到通道强度被用户主动设置为 0 后，将不再自动跟随强度上限。
 - 还原需要手动在手机上点击 "+" 键，将通道强度 +1 ，即恢复自动跟随。
 
 ### 应该如何设置上限
 
 - 建议通过郊狼 APP 内的被控设置进行调整，程序将跟随。
-- 窗口“基本设置”内的 A/B 最大强度也会限制上限，如需超过默认值 100，请在窗口中调整后保存并重启服务。
+- 请在“郊狼 A/B”或“负鼠 A/B”页面分别调整对应设备和通道的强度上限；如需超过默认值 100，修改后保存并重启服务。
 - 为保证强度自动跟随自动运行，请确认郊狼APP内 菜单-被控设置 中，两个通道的强度上限初始值（最小值）大于等于 1。
 
-### 想用一个参数同时触发两个通道
+### 想用同一个 SPS 部位同时触发两个通道
 
-- 在窗口“A/B 参数”页把同一个参数同时粘贴到 A、B 两栏，然后保存并重启服务。
+- 在对应的“郊狼 A/B”或“负鼠 A/B”页面中，为 A、B 选择相同的触发方式和部位，然后保存并重启服务。
 
 ### OSC 端口冲突了怎么办
 
-报错包含 `WinError 10048` 时，通常是本程序和面捕软件同时占用了 UDP 9001。无需再安装独立的 osc-repeater：
-
-1. 在“基本设置”勾选“启用端口分流”。
-2. 入口保留 `127.0.0.1:9001`，VRCFT 目标设为 `127.0.0.1:9011`，本程序内部目标设为 `127.0.0.1:9021`。
-3. 将面捕软件的 OSC Receiver 改为 9011。
-4. 退出其他仍占用 9001 的程序，再点击“保存并重启服务”。
+报错包含 `WinError 10048` 时，说明另一个程序已占用本程序的 OSC UDP 端口。请退出占用该端口的程序，或在进阶配置的 `osc.listen_port` 中选择未占用端口，然后重启服务。VRChat 可通过 OSCQuery 自动发现本程序，无需安装额外分流软件。
 
 ### 控制台内有波形输出，但是没有强度或强度显著变小
 
@@ -266,7 +203,7 @@ PyInstaller 生成无控制台的单文件 `dist\shocking_vrchat.exe`，配置�
 
 ### 程序看起来收不到 OSC 数据
 
-1. **如果你有面捕**，请检查 Steam 中 VRChat 的启动命令行参数，是否有类似 `--osc=9000:127.0.0.1:9001` 的配置；窗口中的“OSC / 分流入口”应与最后一个端口一致。
+1. **如果你有面捕**，请检查 Steam 中 VRChat 的启动命令行参数，是否有类似 `--osc=9000:127.0.0.1:9001` 的配置；如需手动指定，其发送端口应与进阶配置的 `osc.listen_port` 一致。
 2. Action Menu 中选择 Options > OSC > Reset Config 重置 OSC 配置
 3. 如果之前是正常使用的，但忽然收不到，重启电脑可以解决问题，似乎是 VRChat 的 Bug。
 4. 目前**已知会占用 UDP 9000 端口导致 VRChat OSC组件启动失败的程序**，请退出以下程序并重置OSC。
@@ -274,9 +211,8 @@ PyInstaller 生成无控制台的单文件 `dist\shocking_vrchat.exe`，配置�
 
 ### 为什么强度一直是最大可用值
 
-- 程序运行后会自动跟随郊狼APP内设置的上限并与基础配置文件内 `strength_limit` 取一最小值设置为最大强度。
-- 程序使用波形信号控制强度，即便您看到的强度达到了上限，但实际被触发的强度是由触发实体（例如他人的手）距离触发区域（例如 enterPass）中心点的距离决定，线性提升。
-- 如需修改判定上下界请用 `trigger_range` 配置。
+- 每台郊狼的通道强度取自身 `intensityMax` 与“郊狼 A/B”页面对应上限的较小值；负鼠使用“负鼠 A/B”页面中的独立上限。
+- SPS 插入深度 `0～1` 线性缩放波形幅值；运行调试中会分别显示深度和设备通道强度。
 
 ### APP 扫码无法连接/连接超时
 
@@ -284,15 +220,16 @@ PyInstaller 生成无控制台的单文件 `dist\shocking_vrchat.exe`，配置�
 2. 请检查窗口二维码下方的连接地址，例如 `ws://192.168.1.2:28846/?tid=...`，其中 IP 是否为手机可以访问的电脑局域网 IP；不能是 `127.0.0.1`。
 3. 如果IP错误，请在进阶配置文件中 `SERVER_IP:` 填写正确的 IP 地址后重启程序再试。
 4. 请确认 Windows 防火墙是否允许本程序访问网络（接受传入连接）。
-5. 新版二维码采用 DG-LAB 官方 Socket V4 格式；如果状态显示“APP 已连接（V4，等待郊狼）”，说明网络和扫码已正常，需要在 APP 内连接郊狼蓝牙设备。
+5. 新版二维码采用 DG-LAB 官方 Socket V4 格式；如果状态显示“APP 已连接（V4，等待设备）”，说明网络和扫码已正常，需要在 APP 内通过蓝牙连接郊狼或负鼠。
 
 ### 程序版本更新后配置文件如何继承？
 
-- v0.3 首次启动会自动迁移 v0.2 配置并保留原文件。之后同版本更新会继续使用 `%APPDATA%\ShockingVRChat\settings-v0.3.yaml`。
+- v0.8 首次启动会迁移 v0.7 及更旧配置并保留原文件。共享触发设置会作为两类设备的初始值。
 
 ### OSC 能收到其他参数但收不到模型的参数
 
-- 如果你的模型是刚刚修改过的，有可能是 VRChat 的 OSC 配置文件没有更新，请尝试在 Action Menu 中选择 Options > OSC > Reset Config 重置 OSC 配置。
+- 确认模型包含 `/avatar/parameters/OGB/Orf/...` 或 `/avatar/parameters/OGB/Pen/...`。
+- 如果模型刚刚修改过，可能是 VRChat 的 OSC 配置文件没有更新，请在 Action Menu 中选择 Options > OSC > Reset Config。
 
 ## Credits
 

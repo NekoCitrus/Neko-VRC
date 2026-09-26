@@ -1,8 +1,8 @@
-# Shocking VRChat
+# Neko-VRC
 
 > This document is translated by AI.
 
-A small tool that uses WebSocket protocol to link Coyote DG-LAB 3.0 with VRChat avatars by receiving OSC messages. This allows the Coyote device to deliver electric shocks when the avatar is touched by others or themselves in the game.
+A small tool that reads SPS/OGB penetration depth from VRChat OSC and controls either a Coyote DG-LAB 3.0 or an Opossum vibration controller.
 
 > [!CAUTION]
 > You must read and agree to the [Safety Precautions](doc/dglab/SafetyPrecautions.md) before using this tool!
@@ -11,22 +11,22 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 
 ## Usage
 
-1. Go to [Project Release](https://github.com/VRChatNext/Shocking-VRChat/releases) to download the latest version of the Shocking-VRChat tool.
+1. Go to [Project Releases](https://github.com/NekoCitrus/Neko-VRC/releases) to download the latest Neko-VRC build.
 2. Run the exe. The lightweight desktop window opens and starts the background services automatically.
-3. Set the OSC endpoint and A/B strength limits under **General**, then enter one `/avatar/parameters/...` path per line under **A/B Parameters**.
+3. Under **Coyote A/B** and **Opossum A/B**, configure Socket or Plug, the SPS zone, waveform, and strength limit independently for each device type and channel.
 4. Select **Save and restart service**. Allow the app through Windows Firewall if prompted.
-5. In the latest DG-LAB app, open Socket control and scan the QR code on the right. The QR code uses the officially recommended Socket V4 protocol while legacy V3 connections remain supported.
+5. Connect the Coyote or Opossum to DG-LAB 4 APP over Bluetooth, open Socket control, and scan the QR code.
 6. If background operation is enabled, closing the window hides it to the real Windows notification area. Use the tray menu to reopen or exit.
 
 ## Desktop UI
 
-- **General:** listener endpoint, A/B limits, Chatbox, background operation, SteamVR auto-start, and UDP relay.
-- **A/B Parameters:** simple per-line editing, wildcard `*` support, bulk paste, and automatic deduplication.
-- **Runtime Debug:** live parameter, raw OSC value, mapped percentage, and actual output for one Coyote device. The status distinguishes an unconnected app, an attached app waiting for Bluetooth, and a ready Coyote device.
+- **General:** Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
+- **Coyote A/B:** independent trigger type, zone scope, waveform, and strength limit for Coyote channels A and B. Each limit is capped by the slot's reported `intensityMax`.
+- **Opossum A/B:** independent trigger type, zone scope, waveform, and strength limit for Opossum channels A and B; these settings do not reuse Coyote values.
+- **Runtime Debug:** device connection, trigger type, selected scope, active zone, depth, and device-channel strength.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
-- **UDP Relay:** forwards every incoming datagram unchanged to VRCFT (default `127.0.0.1:9011`) and this app (default `127.0.0.1:9021`).
 
-Only one Coyote device is accepted. Additional device connections are rejected.
+Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
 
 ### Start with SteamVR
 
@@ -37,54 +37,43 @@ This feature does not use Windows login startup and does not launch or poll for 
 ## Configuration location
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v0.3.yaml
+%APPDATA%\ShockingVRChat\settings-v0.8.yaml
 ```
 
-The log is stored as `shocking-vrchat.log` in the same directory. On the first v0.3 run, existing v0.2 files beside the exe/source are migrated automatically and are not deleted.
+The log is stored as `neko-vrc.log` in the same directory. The legacy `%APPDATA%\ShockingVRChat` directory is retained for upgrade compatibility. The first v0.8 run migrates v0.7 and older files. Legacy shared SPS settings initialize separate Coyote and Opossum A/B settings.
 
-## Working Mode Explanation
+## Device control
 
-### distance Mode
+Coyote and Opossum share one DG-LAB 4 APP Socket V4 connection, but the APP reports every host as an independent `slotId`. The application keeps each `COYOTE_020` / `COYOTE_030` and `OVC_1` slot separate, calculates its strength independently, and sends operations to the matching slot. Opossum waveforms are normalized to the OVC fixed prefix and four vibration-amplitude bytes. See the official [dglab-kit](https://github.com/dungeonlab-open/dglab-kit).
 
-- Controls waveform intensity based on the distance to the center of the trigger area.
-- The closer to the center, the stronger the intensity.
-- In distance mode, the meaning of `trigger_range` is:
-    - When received OSC data is greater than `bottom`, waveform intensity starts to change linearly, with the upper limit as `top`.
-    - When the data reaches or exceeds the `top` parameter, it outputs at maximum intensity.
-    - It is recommended to set `bottom` to 0 or a small number.
-    - It is recommended to set `top` to 1.0 for the maximum dynamic range.
+## SPS trigger types
 
-### shock Mode
+Each A/B channel uses exactly one trigger type:
 
-- Triggers a fixed duration electric shock (default: 2 seconds).
-- If continuously touched, the shock continues for a fixed duration after the touch ends.
-- In shock mode, the meaning of `trigger_range` is:
-    - When received OSC data is greater than `bottom`, it triggers the shock.
-    - The `top` parameter is ignored in shock mode.
+- **SPS Socket penetration:** estimates depth from the selected `OGB/Orf/<zone>` Root/Tip values using the OGB algorithm.
+- **SPS Plug penetration:** reads `PenSelf/PenOthers` from the selected `OGB/Pen/<zone>`.
+
+Both produce a `0..1` depth that linearly scales waveform amplitude for every connected host. Free-form parameters, distance/shock modes, and `trigger_range` have been removed.
+
+Each trigger type can target one named zone or **any currently active** zone; the latter uses the maximum depth across active zones. The application actively discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar ID and SPS parameter tree. `/avatar/change` only requests an immediate refresh and acts as a fallback if the query fails; the local OSC JSON supplies friendly names when available.
 
 ## Configuration File Reference
 
-The configuration format is YAML, version `v0.3`. UI-managed channels are stored under `channels.dglab3`; advanced options are stored under `settings`.
+The configuration format is YAML, version `v0.8`. Coyote and Opossum A/B settings are independent under `channels.dglab3.coyote` and `channels.dglab3.opossum`.
 
 ```yaml
-version: v0.3
+version: v0.8
 channels:
-  version: v0.3
+  version: v0.8
   dglab3:
-    channel_a:
-      avatar_params:
-      - /avatar/parameters/pcs/contact/enterPass
-      - /avatar/parameters/Shock/wildcard/*
-      mode: distance
-      strength_limit: 100 # The smaller of this and the DG-LAB app limit is used
-    channel_b:
-      avatar_params:
-      - /avatar/parameters/lms-penis-proximityA*
-      - /avatar/parameters/ShockB2/some/param
-      mode: shock
-      strength_limit: 100
+    coyote:
+      channel_a: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
+      channel_b: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
+    opossum:
+      channel_a: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
+      channel_b: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
 settings:
-  version: v0.3
+  version: v0.8
   osc:
     listen_host: 127.0.0.1
     listen_port: 9001
@@ -96,39 +85,10 @@ settings:
 
 ## Model Parameter Configuration
 
-- Internal parameters processed by the program range between 0 and 1 (float).
-- Supported input parameter types are float, int, and bool:
-    - float, int: Values less than 0 are considered 0, and values greater than 1 are considered 1.
-    - bool: True is considered 1, False is considered 0.
-- Other parameter types will cause an error.
-
-## Common Parameters
-
-> Please help to supplement descriptions and explanations for this section.
-
-- float
-  - /avatar/parameters/pcs/contact/enterPass
-    - Most commonly used, located at the pcs trigger entrance, can automatically switch following the triggered position
-  - /avatar/parameters/pcs/contact/proximityA
-  - /avatar/parameters/pcs/contact/proximityB
-  - /avatar/parameters/pcs/contact/slide
-  - /avatar/parameters/pcs/smash-intensity
-  - /avatar/parameters/pcs/sps/pussy
-    - If you need to trigger from a specified position only, try parameters under pcs/sps, which won't follow auto mode position changes
-  - /avatar/parameters/pcs/sps/ass
-  - /avatar/parameters/pcs/sps/boobs
-  - /avatar/parameters/pcs/sps/mouth
-  - /avatar/parameters/pcs/sps/penis*
-  - /avatar/parameters/lms-penis-proximityA*
-    - Parameters usable for triggering via LMS
-- bool
-  - /avatar/parameters/pcs/smash-intense
-  - /avatar/parameters/pcs/contact/in
-  - /avatar/parameters/pcs/contact/out
-  - /avatar/parameters/pcs/contact/hit
-  - /avatar/parameters/lms-stroke-in
-  - /avatar/parameters/lms-stroke-out*
-  - /avatar/parameters/lms-stroke-smash
+- The Avatar must expose compatible SPS/OGB parameters.
+- Socket paths start with `/avatar/parameters/OGB/Orf/`.
+- Plug paths start with `/avatar/parameters/OGB/Pen/`.
+- The application extracts zones from the OSC JSON matching VRChat's `/avatar/change` ID. `*` means any currently active zone; a specific zone ID is also accepted.
 
 ## Advanced Configuration Reference
 
@@ -137,33 +97,16 @@ The following excerpt belongs inside the top-level `settings` section:
 ```yaml
 SERVER_IP: null # When null, the program will attempt to automatically obtain the local IP. If incorrect, change null to the correct IP address (the one that the phone can access, usually the wired network or WiFi)
 dglab3:
-  channel_a: # Channel A configuration
-    mode_config:   # Working mode configuration
-      distance:
-      # Parameters under this item only apply to distance mode
-        freq_ms: 10 
-        # Frequency of waveform generation (interval in milliseconds), recommended 10 
-        # For details, refer to the waveform section of the DG-LAB-OPENSOURCE Bluetooth protocol V3
-      shock:
-      # Parameters under this item only apply to shock mode
-        duration: 2
-        # Duration of the shock after triggering
-        wave: '["0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464"]'
-        # Shock waveform
-      trigger_range:
-      # Trigger threshold settings, effective for all modes, range 0 ~ 1
-        bottom: 0.0 # Lower bound of the OSC reporting parameter (values below are considered 0%)
-        top: 0.8    # Upper bound of the OSC reporting parameter (values above are considered 100%)
-  channel_b: # Channel B configuration, parameter settings are the same as Channel A
-    mode_config:
-      distance:
-        freq_ms: 10
-      shock:
-        duration: 2
-        wave: '["0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464","0A0A0A0A64646464"]'
-      trigger_range:
-        bottom: 0.1
-        top: 0.8
+  coyote:
+    channel_a: # Coyote channel A
+      depth: {freq_ms: 10, waveform: 呼吸}
+    channel_b: # Coyote channel B
+      depth: {freq_ms: 10, waveform: 呼吸}
+  opossum:
+    channel_a: # Opossum channel A
+      depth: {freq_ms: 10, waveform: 呼吸}
+    channel_b: # Opossum channel B
+      depth: {freq_ms: 10, waveform: 呼吸}
 general: # General configuration
   run_in_background: true
   steamvr_auto_start: false # Prefer changing this in the desktop UI
@@ -174,7 +117,7 @@ log_level: INFO # Log level, can be changed to DEBUG for troubleshooting
 osc: # OSC service configuration
   listen_host: 127.0.0.1 # If VRChat runs on another host, change to 0.0.0.0 and configure VRChat with the correct OSC startup command line parameters.
   listen_port: 9001
-version: v0.3 # Configuration file version
+version: v0.8 # Configuration file version
 web_server: # Web server configuration
   listen_host: 127.0.0.1 # If you need to open the web page for scanning from another host, change to 0.0.0.0
   listen_port: 8800
@@ -186,7 +129,7 @@ ws: # WebSocket service configuration
 
 ### Chatbox and control API settings
 
-Missing options are added automatically to the unified v0.3 configuration:
+Missing options are added automatically to the unified v0.8 configuration:
 
 ```yaml
 chatbox:
@@ -208,28 +151,28 @@ HTTP APIs that actuate a device are disabled by default. Enable them only when r
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-build.txt
 python -m unittest discover -v
-pyinstaller --clean --noconfirm shocking_vrchat.spec
+pyinstaller --clean --noconfirm neko_vrc.spec
 ```
 
-PyInstaller produces the console-free single file `dist\shocking_vrchat.exe`. Configuration is always written under `%APPDATA%\ShockingVRChat\`, not beside the executable.
+PyInstaller produces the console-free single file `dist\Neko-VRC.exe`. Configuration remains under the compatibility directory `%APPDATA%\ShockingVRChat\`, not beside the executable.
 
 ## FAQ
 
 ### Is there an escape route?
 
-- Yes, you can press any shoulder button on the Coyote. This will set the strength of channels A and B to 0.
+- On a Coyote, press either shoulder button to set both channels to 0. For an Opossum, stop output or disconnect the device in DG-LAB APP.
 - When the program detects that the channel strength is manually set to 0, it will no longer automatically follow the strength limit.
 - To restore, manually click the "+" button on the phone to increase the channel strength by 1, thereby resuming automatic following.
 
 ### How should I set the strength limit?
 
 - It is recommended to adjust through the controlled settings in the Coyote APP. The program will follow these settings.
-- The `strength_limit` in the basic configuration file `settings-v*.*.yaml` also limits the maximum strength. If it exceeds the default value of 100, you need to adjust this parameter.
+- Use the corresponding **Coyote A/B** or **Opossum A/B** page. A Coyote value is additionally capped by that slot's `intensityMax`; an Opossum value is independent.
 - To ensure the strength follows automatically, make sure that the initial strength limit value (minimum value) of both channels in the Coyote APP's controlled settings menu is greater than or equal to 1.
 
-### How can I use one parameter to trigger two channels simultaneously?
+### How can I use one SPS zone to trigger two channels simultaneously?
 
-- Copy the parameter you want to use, such as `/avatar/parameters/pcs/contact/enterPass`, into the `avatar_params` list of both `channel_a` and `channel_b` in the basic configuration file `settings-v*.*.yaml`. Pay attention to the indentation and the `-` at the beginning of the line.
+- On the corresponding **Coyote A/B** or **Opossum A/B** page, select the same SPS trigger type and zone for A and B, then save and restart the service.
 
 ### The waveform is output in the console, but there's no strength or the strength significantly decreases.
 
@@ -243,9 +186,8 @@ PyInstaller produces the console-free single file `dist\shocking_vrchat.exe`. Co
 
 ### Why is the strength always at the maximum available value?
 
-- After running the program, it will automatically follow the upper limit set in the Coyote APP and set the maximum strength by taking the minimum of this value and the `strength_limit` in the basic configuration file.
-- The program uses waveform signals to control strength. Even if you see the strength reaching the upper limit, the actual triggered strength is determined by the distance between the trigger entity (e.g., another player's hand) and the center of the trigger area (e.g., enterPass), increasing linearly.
-- To modify the judgment thresholds, use the `trigger_range` configuration.
+- Coyote uses the lower of its reported `intensityMax` and the matching limit on **Coyote A/B**; Opossum uses its matching independent limit on **Opossum A/B**.
+- SPS penetration depth `0..1` linearly scales waveform amplitude. Runtime Debug reports depth and device-channel strength separately.
 
 ### The APP cannot connect/connection times out when scanning the QR code.
 
@@ -253,16 +195,16 @@ PyInstaller produces the console-free single file `dist\shocking_vrchat.exe`. Co
 2. Check the connection address below the QR code, such as `ws://192.168.1.2:28846/?tid=...`. The IP must be reachable from the phone and must not be `127.0.0.1`.
 3. If the IP is incorrect, fill in the correct IP address in the advanced configuration file under `SERVER_IP:` and restart the program to try again.
 4. Check if the Windows firewall allows this program to access the network (accept incoming connections).
-5. Current QR codes use the official DG-LAB Socket V4 format. If the status says that the V4 app is connected but waiting for Coyote, scanning and networking are working; connect the Coyote over Bluetooth in the app.
+5. Current QR codes use the official DG-LAB Socket V4 format. If the status says that the V4 app is connected but waiting for a device, scanning and networking are working; connect a Coyote or Opossum over Bluetooth in the app.
 
 ### How to inherit configuration files after program updates?
 
-- The program version and configuration file version are separate. If only the program version is updated, the configuration file does not need to be modified and can be used as is.
-- If the configuration file version is updated, the original configuration will not be overwritten. Observe the changes in the new configuration file and fill in the necessary parameters into the new configuration file.
+- The first v0.8 run migrates v0.7 and older files while retaining them. Shared trigger settings initialize both device-specific configurations.
 
 ### OSC can receive other parameters but not the model's parameters.
 
-- If your model has just been modified, it's possible that VRChat's OSC configuration file hasn't been updated. Try resetting the OSC configuration in the Action Menu by selecting Options > OSC > Reset Config.
+- Confirm that the Avatar exposes `/avatar/parameters/OGB/Orf/...` or `/avatar/parameters/OGB/Pen/...`.
+- If the Avatar was just modified, reset its OSC configuration from Action Menu > Options > OSC > Reset Config.
 
 ## Credits
 

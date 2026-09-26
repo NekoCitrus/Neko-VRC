@@ -43,8 +43,8 @@ class DGConnection:
         self.strength = {'A': 0, 'B': 0}
         self.strength_max = {'A': 0, 'B': 0}
         self.strength_limit = {
-            'A': SETTINGS['dglab3']['channel_a']['strength_limit'],
-            'B': SETTINGS['dglab3']['channel_b']['strength_limit'],
+            'A': SETTINGS['dglab3']['coyote']['channel_a']['strength_limit'],
+            'B': SETTINGS['dglab3']['coyote']['channel_b']['strength_limit'],
         }
         self.bound = False
         # websockets 不允许并发 send；所有波形、心跳和强度更新共用一把锁。
@@ -54,8 +54,8 @@ class DGConnection:
     def __str__(self):
         return f'<DGConnection (id:{self.uuid}, {self.strength}, max {self.strength_max})>'
 
-    def is_device_ready(self):
-        return self.bound
+    def is_device_ready(self, device_kind=None):
+        return self.bound and device_kind in (None, 'coyote')
 
     async def send_text(self, message):
         logger.debug('ID {}, SENDING {}', self.uuid, message)
@@ -132,11 +132,15 @@ class DGConnection:
         channel = self._validate_channel(channel)
         await self.set_strength(channel=channel, mode='2', value=int(self.get_upper_strength(channel) * value))
 
-    async def send_wave(self, channel='A', wavestr=DEFAULT_WAVE):
+    async def send_wave(self, channel='A', wavestr=DEFAULT_WAVE, device_kind='coyote'):
+        if device_kind != 'coyote':
+            return
         channel = self._validate_channel(channel)
         await DGWSMessage('msg', self.master_uuid, self.uuid, f'pulse-{channel}:{wavestr}').send(self)
 
-    async def clear_wave(self, channel='A'):
+    async def clear_wave(self, channel='A', device_kind='coyote'):
+        if device_kind != 'coyote':
+            return
         channel = self._validate_channel(channel)
         device_channel = '1' if channel == 'A' else '2'
         await DGWSMessage('msg', self.master_uuid, self.uuid, f'clear-{device_channel}').send(self)
@@ -208,12 +212,14 @@ class DGConnection:
                 logger.warning(f'Broadcast to {conn.uuid} failed: {result}')
 
     @classmethod
-    async def broadcast_wave(cls, channel='A', wavestr=DEFAULT_WAVE):
-        await cls._broadcast('send_wave', channel=channel, wavestr=wavestr)
+    async def broadcast_wave(cls, channel='A', wavestr=DEFAULT_WAVE, device_kind='coyote'):
+        await cls._broadcast(
+            'send_wave', channel=channel, wavestr=wavestr, device_kind=device_kind,
+        )
 
     @classmethod
-    async def broadcast_clear_wave(cls, channel='A'):
-        await cls._broadcast('clear_wave', channel=channel)
+    async def broadcast_clear_wave(cls, channel='A', device_kind='coyote'):
+        await cls._broadcast('clear_wave', channel=channel, device_kind=device_kind)
 
     @classmethod
     async def broadcast_strength_0_to_1(cls, channel='A', value=0):

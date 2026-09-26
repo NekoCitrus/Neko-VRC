@@ -13,14 +13,17 @@ class AdvancedChatboxManager:
 
         # 即使禁用 Chatbox，也要保留状态容器；ShockHandler 仍可能上报状态。
         self.channel_modes = {
-            channel: {
-                'mode': 'unknown',
-                'strength_percentage': 0.0,
-                'is_active': False,
-                'last_active_time': 0.0,
-                'duration': 0.0,
+            device_kind: {
+                channel: {
+                    'mode': 'unknown',
+                    'strength_percentage': 0.0,
+                    'is_active': False,
+                    'last_active_time': 0.0,
+                    'duration': 0.0,
+                }
+                for channel in ('A', 'B')
             }
-            for channel in ('A', 'B')
+            for device_kind in ('coyote', 'opossum')
         }
 
         if self.enabled:
@@ -36,11 +39,14 @@ class AdvancedChatboxManager:
                 except Exception as exc:
                     logger.warning(f'启用Chatbox失败: {exc}')
 
-    def update_channel_mode(self, channel, mode, strength_percentage, is_active=False, duration=0):
+    def update_channel_mode(
+        self, channel, mode, strength_percentage, is_active=False, duration=0,
+        device_kind='coyote',
+    ):
         """更新通道模式信息。"""
         channel = channel.upper()
-        if channel in self.channel_modes:
-            channel_info = self.channel_modes[channel]
+        if device_kind in self.channel_modes and channel in self.channel_modes[device_kind]:
+            channel_info = self.channel_modes[device_kind][channel]
             channel_info['mode'] = mode
             channel_info['strength_percentage'] = strength_percentage
             channel_info['is_active'] = is_active
@@ -51,8 +57,8 @@ class AdvancedChatboxManager:
     def get_mode_display_name(self, mode):
         """获取模式显示名称。"""
         mode_names = {
-            'distance': '距离模式',
-            'shock': '电击模式',
+            'sps_socket': 'Socket 深度',
+            'sps_plug': 'Plug 深度',
             'unknown': '未知模式',
         }
         return mode_names.get(mode, mode)
@@ -77,6 +83,7 @@ class AdvancedChatboxManager:
                 mode_info['mode'],
                 mode_info['strength_percentage'],
                 mode_info['is_active'],
+                device_kind=mode_info.get('device_kind', 'coyote'),
             )
 
     def format_device_status(self, connections, shock_handlers=None):
@@ -85,12 +92,24 @@ class AdvancedChatboxManager:
             return '设备未连接'
 
         self._refresh_handler_status(shock_handlers)
-        status_lines = [
-            f"MAX A:{conn.strength_max.get('A', 0)} B:{conn.strength_max.get('B', 0)}"
-            for conn in connections
-        ]
+        status_lines = []
+        for conn in connections:
+            getter = getattr(conn, 'get_device_states', None)
+            if getter is None:
+                status_lines.append(
+                    f"郊狼 MAX A:{conn.get_upper_strength('A')} B:{conn.get_upper_strength('B')}"
+                )
+                continue
+            for state in getter():
+                label = '负鼠' if state['device_kind'] == 'opossum' else '郊狼'
+                upper = state['upper_strength']
+                status_lines.append(
+                    f"{label} MAX A:{upper.get('A', 0)} B:{upper.get('B', 0)}"
+                )
+        if not status_lines:
+            return 'APP已连接，等待设备'
         if len(status_lines) > 1:
-            return '郊狼状态 - 多设备:\n' + '\n'.join(status_lines)
+            return '设备状态 - 多设备:\n' + '\n'.join(status_lines)
         return status_lines[0]
 
     def format_detailed_status(self, connections, shock_handlers=None):
@@ -101,21 +120,36 @@ class AdvancedChatboxManager:
         self._refresh_handler_status(shock_handlers)
         detailed_lines = []
         for conn in connections:
-            strength_a = conn.strength.get('A', 0)
-            strength_b = conn.strength.get('B', 0)
-            max_a = conn.strength_max.get('A', 0)
-            max_b = conn.strength_max.get('B', 0)
-            mode_a = self.get_mode_display_name(self.channel_modes['A']['mode'])
-            mode_b = self.get_mode_display_name(self.channel_modes['B']['mode'])
-            strength_pct_a = int(self.channel_modes['A']['strength_percentage'] * 100)
-            strength_pct_b = int(self.channel_modes['B']['strength_percentage'] * 100)
-            activity_a = self.get_activity_indicator(self.channel_modes['A'])
-            activity_b = self.get_activity_indicator(self.channel_modes['B'])
-            detailed_lines.append(
-                f"设备 {conn.uuid[:8]}:\n"
-                f"A: {strength_a}/{max_a} ({strength_pct_a}%) {mode_a}{activity_a}\n"
-                f"B: {strength_b}/{max_b} ({strength_pct_b}%) {mode_b}{activity_b}"
-            )
+            getter = getattr(conn, 'get_device_states', None)
+            states = getter() if getter is not None else ({
+                'slot_id': conn.uuid[:8],
+                'device_kind': 'coyote',
+                'strength': conn.strength,
+                'upper_strength': {
+                    'A': conn.get_upper_strength('A'),
+                    'B': conn.get_upper_strength('B'),
+                },
+            },)
+            for state in states:
+                label = '负鼠' if state['device_kind'] == 'opossum' else '郊狼'
+                channel_modes = self.channel_modes[state['device_kind']]
+                mode_a = self.get_mode_display_name(channel_modes['A']['mode'])
+                mode_b = self.get_mode_display_name(channel_modes['B']['mode'])
+                strength_pct_a = int(channel_modes['A']['strength_percentage'] * 100)
+                strength_pct_b = int(channel_modes['B']['strength_percentage'] * 100)
+                activity_a = self.get_activity_indicator(channel_modes['A'])
+                activity_b = self.get_activity_indicator(channel_modes['B'])
+                strength = state['strength']
+                upper = state['upper_strength']
+                detailed_lines.append(
+                    f"{label} {state['slot_id'][:8]}:\n"
+                    f"A: {strength.get('A', 0)}/{upper.get('A', 0)} "
+                    f"({strength_pct_a}%) {mode_a}{activity_a}\n"
+                    f"B: {strength.get('B', 0)}/{upper.get('B', 0)} "
+                    f"({strength_pct_b}%) {mode_b}{activity_b}"
+                )
+        if not detailed_lines:
+            return 'APP已连接，等待设备'
         return '\n\n'.join(detailed_lines)
 
     async def update_chatbox(self, connections, shock_handlers=None, detailed=False):
@@ -152,7 +186,7 @@ class AdvancedChatboxManager:
         if not self.enabled or self.osc_client is None:
             return
         try:
-            self.send_custom_message('郊狼设备已断开')
+            self.send_custom_message('设备已断开')
             if self.settings.get('set_avatar_parameter', True):
                 self.osc_client.send_message('/avatar/parameters/ChatboxEnable', 0.0)
             logger.info('Chatbox功能已清理')

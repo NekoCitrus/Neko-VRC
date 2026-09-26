@@ -1,15 +1,28 @@
 import asyncio
 import copy
 import json
+import tempfile
 import unittest
 import uuid
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import shocking_vrchat
 from srv.advanced_chatbox_manager import AdvancedChatboxManager
 from srv.handler.base_handler import BaseHandler
 from srv.handler.shock_handler import ShockHandler
+from srv.sps_depth import (
+    SPSDepthCalculator,
+    SPS_PLUG,
+    SPS_SOCKET,
+    find_avatar_sps_config,
+    load_avatar_sps_config,
+)
+from srv.waveform import (
+    normalize_socket_frame,
+    scale_coyote_frame,
+)
 
 
 class FakeDGConnection:
@@ -17,29 +30,25 @@ class FakeDGConnection:
         self.waves = []
         self.cleared = []
 
-    async def broadcast_wave(self, channel, wavestr):
-        self.waves.append((channel, json.loads(wavestr)))
+    async def broadcast_wave(self, channel, wavestr, device_kind='coyote'):
+        self.waves.append((device_kind, channel, json.loads(wavestr)))
 
-    async def broadcast_clear_wave(self, channel):
-        self.cleared.append(channel)
+    async def broadcast_clear_wave(self, channel, device_kind='coyote'):
+        self.cleared.append((device_kind, channel))
 
 
-def make_settings(mode='distance'):
+def make_settings(trigger_type=SPS_PLUG):
     return {
         'dglab3': {
-            'channel_a': {
-                'mode': mode,
-                'strength_limit': 100,
-                'avatar_params': ['/avatar/parameters/test'],
-                'mode_config': {
-                    'distance': {'freq_ms': 10},
-                    'shock': {
-                        'duration': 2,
-                        'wave': json.dumps(['0A0A0A0A64646464'] * 10),
-                    },
-                    'trigger_range': {'bottom': 0.0, 'top': 1.0},
+            device_kind: {
+                'channel_a': {
+                    'trigger_type': trigger_type,
+                    'zone': 'Test',
+                    'strength_limit': 100,
+                    'depth': {'freq_ms': 10},
                 },
-            },
+            }
+            for device_kind in ('coyote', 'opossum')
         },
     }
 
@@ -55,38 +64,145 @@ class BaseHandlerTests(unittest.TestCase):
 
 
 class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_distance_updates_activity_state(self):
+    async def test_device_kinds_use_independent_trigger_settings(self):
+        settings = make_settings()
+        settings['dglab3']['coyote']['channel_a'].update({
+            'trigger_type': SPS_SOCKET,
+            'zone': 'CoyoteSocket',
+        })
+        settings['dglab3']['opossum']['channel_a'].update({
+            'trigger_type': SPS_PLUG,
+            'zone': 'OpossumPlug',
+        })
+
+        coyote = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='coyote')
+        opossum = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='opossum')
+
+        self.assertEqual(coyote.get_mode_info()['device_kind'], 'coyote')
+        self.assertEqual(opossum.get_mode_info()['device_kind'], 'opossum')
+        self.assertTrue(all('/OGB/Orf/CoyoteSocket/' in path for path, _field in coyote.osc_bindings()))
+        self.assertTrue(all('/OGB/Pen/OpossumPlug/' in path for path, _field in opossum.osc_bindings()))
+
+    async def test_depth_updates_activity_state(self):
         handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
-        await handler.handler_distance(0.5)
+        await handler.handler_depth(0.5)
         self.assertTrue(handler.is_active)
         self.assertEqual(handler.current_strength_percentage, 0.5)
 
     async def test_debug_event_contains_parameter_raw_and_mapped_values(self):
         events = []
         handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', event_callback=events.append)
-        result = handler.osc_handler('/avatar/parameters/test', 0.25)
+        result = handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenOthers', 'PenOthers', 0.25)
         await asyncio.sleep(0)
         self.assertIsNone(result)
-        self.assertEqual(handler.last_parameter, '/avatar/parameters/test')
+        self.assertEqual(handler.last_parameter, '/avatar/parameters/OGB/Pen/Test/PenOthers')
         self.assertEqual(handler.last_raw_value, 0.25)
         self.assertTrue(any(event.get('strength_percentage') == 0.25 for event in events))
 
-    async def test_short_shock_sends_partial_wave(self):
-        connection = FakeDGConnection()
-        handler = ShockHandler(make_settings('shock'), connection, 'A')
-        wave = json.dumps(['0A0A0A0A64646464'] * 10)
-        with patch('srv.handler.shock_handler.asyncio.sleep', new=AsyncMock()):
-            await handler.send_shock_wave(0.5, wave)
-        self.assertEqual(len(connection.waves), 1)
-        self.assertEqual(len(connection.waves[0][1]), 5)
+    async def test_any_zone_uses_the_deepest_currently_triggering_zone(self):
+        settings = make_settings()
+        settings['dglab3']['coyote']['channel_a']['zone'] = '*'
+        handler = ShockHandler(settings, FakeDGConnection(), 'A')
+        handler.osc_handler('/avatar/parameters/OGB/Pen/First/PenOthers', 'PenOthers', 0.25)
+        handler.osc_handler('/avatar/parameters/OGB/Pen/Second/PenOthers', 'PenOthers', 0.7)
+        await asyncio.sleep(0)
+        self.assertEqual(handler.active_zone, 'Second')
+        self.assertEqual(handler.current_strength_percentage, 0.7)
+        handler.osc_handler('/avatar/parameters/OGB/Pen/Second/PenOthers', 'PenOthers', 0.0)
+        await asyncio.sleep(0)
+        self.assertEqual(handler.active_zone, 'First')
+        self.assertEqual(handler.current_strength_percentage, 0.25)
 
-    async def test_fractional_shock_uses_final_partial_wave(self):
-        connection = FakeDGConnection()
-        handler = ShockHandler(make_settings('shock'), connection, 'A')
-        wave = json.dumps(['0A0A0A0A64646464'] * 10)
-        with patch('srv.handler.shock_handler.asyncio.sleep', new=AsyncMock()):
-            await handler.send_shock_wave(2.5, wave)
-        self.assertEqual([len(item[1]) for item in connection.waves], [10, 10, 5])
+    async def test_avatar_change_clears_previous_zone_values(self):
+        settings = make_settings()
+        handler = ShockHandler(settings, FakeDGConnection(), 'A')
+        handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenOthers', 'PenOthers', 0.6)
+        await asyncio.sleep(0)
+        handler.reset_for_avatar_change()
+        await asyncio.sleep(0)
+        self.assertEqual(handler.calculators, {})
+        self.assertEqual(handler.active_zone, '')
+        self.assertEqual(handler.current_strength_percentage, 0.0)
+
+
+class SPSDepthTests(unittest.TestCase):
+    def test_avatar_json_exposes_socket_and_plug_dropdown_options(self):
+        document = {
+            'id': 'avtr_test',
+            'name': 'Test Avatar',
+            'parameters': [
+                {
+                    'name': 'OGB/Orf/Test Socket/PenOthersNewRoot',
+                    'output': {
+                        'address': '/avatar/parameters/OGB/Orf/Test_Socket/PenOthersNewRoot',
+                        'type': 'Float',
+                    },
+                },
+                {
+                    'name': 'OGB/Pen/Test Plug/PenOthers',
+                    'output': {
+                        'address': '/avatar/parameters/OGB/Pen/Test_Plug/PenOthers',
+                        'type': 'Float',
+                    },
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'avtr_test.json'
+            path.write_text(json.dumps(document), encoding='utf-8')
+            avatar = load_avatar_sps_config(path)
+        self.assertEqual([(item.label, item.zone_id) for item in avatar.sockets], [('Test Socket', 'Test_Socket')])
+        self.assertEqual([(item.label, item.zone_id) for item in avatar.plugs], [('Test Plug', 'Test_Plug')])
+
+    def test_avatar_lookup_uses_the_id_reported_by_vrchat(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            for avatar_id, avatar_name in (
+                ('avtr_old', 'Old Avatar'),
+                ('avtr_current', 'Current Avatar'),
+            ):
+                (root_path / f'{avatar_id}.json').write_text(
+                    json.dumps({'id': avatar_id, 'name': avatar_name, 'parameters': []}),
+                    encoding='utf-8',
+                )
+            avatar = find_avatar_sps_config('avtr_current', root_path)
+        self.assertIsNotNone(avatar)
+        self.assertEqual(avatar.avatar_id, 'avtr_current')
+        self.assertEqual(avatar.avatar_name, 'Current Avatar')
+        self.assertIsNone(find_avatar_sps_config('../invalid', '.'))
+
+    def test_plug_uses_deepest_self_or_other_socket(self):
+        calculator = SPSDepthCalculator(SPS_PLUG)
+        calculator.update('PenSelf', 0.25)
+        self.assertEqual(calculator.update('PenOthers', 0.7), 0.7)
+
+    def test_socket_root_tip_depth_matches_ogb_formula(self):
+        calculator = SPSDepthCalculator(SPS_SOCKET)
+        for _ in range(4):
+            calculator.update('PenOthersNewRoot', 0.2)
+            calculator.update('PenOthersNewTip', 0.6)
+        calculator.update('PenOthersNewRoot', 0.8)
+        self.assertAlmostEqual(calculator.update('PenOthersNewTip', 1.0), 0.5)
+
+
+class WaveformProtocolTests(unittest.TestCase):
+    def test_named_coyote_frame_is_scaled_by_depth(self):
+        self.assertEqual(
+            scale_coyote_frame('0A141E2864643219', 0.5),
+            '0A141E283232190C',
+        )
+
+    def test_ovc_socket_frame_uses_fixed_prefix_and_selected_amplitudes(self):
+        self.assertEqual(
+            normalize_socket_frame('1919181864643219', 'OVC_1'),
+            '0A0A0A0A64643219',
+        )
+
+    def test_coyote_socket_frame_is_preserved(self):
+        self.assertEqual(
+            normalize_socket_frame('1919181864643219', 'COYOTE_030'),
+            '1919181864643219',
+        )
 
 
 class ConfigAndApiTests(unittest.TestCase):
@@ -103,8 +219,8 @@ class ConfigAndApiTests(unittest.TestCase):
     def test_default_config_is_valid(self):
         shocking_vrchat.validate_config(self.settings, self.basic)
 
-    def test_invalid_trigger_range_is_rejected(self):
-        self.settings['dglab3']['channel_a']['mode_config']['trigger_range']['top'] = 0.0
+    def test_invalid_sps_trigger_type_is_rejected(self):
+        self.basic['dglab3']['coyote']['channel_a']['trigger_type'] = 'legacy_distance'
         with self.assertRaises(ValueError):
             shocking_vrchat.validate_config(self.settings, self.basic)
 
@@ -173,8 +289,8 @@ class ConfigAndApiTests(unittest.TestCase):
 class ChatboxTests(unittest.TestCase):
     def test_disabled_manager_still_accepts_channel_updates(self):
         manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
-        manager.update_channel_mode('A', 'distance', 0.5, is_active=True)
-        self.assertTrue(manager.channel_modes['A']['is_active'])
+        manager.update_channel_mode('A', 'sps_socket', 0.5, is_active=True)
+        self.assertTrue(manager.channel_modes['coyote']['A']['is_active'])
 
     def test_cleanup_closes_udp_socket(self):
         manager = AdvancedChatboxManager({

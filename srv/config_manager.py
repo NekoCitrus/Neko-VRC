@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 import re
 import secrets
@@ -8,51 +7,45 @@ from pathlib import Path
 
 import yaml
 
+from srv import WAVEFORM_NAMES
 
+
+# Keep the legacy data directory so existing users retain their settings and
+# SteamVR manifest when upgrading to the renamed application.
 APP_NAME = 'ShockingVRChat'
-CONFIG_FILE_VERSION = 'v0.3'
+PRODUCT_NAME = 'Neko-VRC'
+CONFIG_FILE_VERSION = 'v0.8'
 CONFIG_FILENAME = f'settings-{CONFIG_FILE_VERSION}.yaml'
 
 DEFAULT_BASIC_SETTINGS = {
     'dglab3': {
-        'channel_a': {
-            'avatar_params': [
-                '/avatar/parameters/pcs/contact/enterPass',
-                '/avatar/parameters/Shock/TouchAreaA',
-                '/avatar/parameters/Shock/TouchAreaC',
-                '/avatar/parameters/Shock/wildcard/*',
-            ],
-            'mode': 'distance',
-            'strength_limit': 100,
-        },
-        'channel_b': {
-            'avatar_params': [
-                '/avatar/parameters/pcs/contact/enterPass',
-                '/avatar/parameters/lms-penis-proximityA*',
-                '/avatar/parameters/Shock/TouchAreaB',
-                '/avatar/parameters/Shock/TouchAreaC',
-            ],
-            'mode': 'distance',
-            'strength_limit': 100,
-        },
+        device_kind: {
+            'channel_a': {
+                'trigger_type': 'sps_socket',
+                'zone': '*',
+                'strength_limit': 100,
+            },
+            'channel_b': {
+                'trigger_type': 'sps_plug',
+                'zone': '*',
+                'strength_limit': 100,
+            },
+        }
+        for device_kind in ('coyote', 'opossum')
     },
     'version': CONFIG_FILE_VERSION,
 }
 
-_DEFAULT_WAVE = json.dumps(['0A0A0A0A64646464'] * 10, separators=(',', ':'))
-_DEFAULT_WAVEFORM = '呼吸'
-
 DEFAULT_SETTINGS = {
     'SERVER_IP': None,
     'dglab3': {
-        channel: {
-            'mode_config': {
-                'shock': {'duration': 2, 'wave': _DEFAULT_WAVE, 'waveform': _DEFAULT_WAVEFORM},
-                'distance': {'freq_ms': 10},
-                'trigger_range': {'bottom': 0.0, 'top': 1.0},
-            },
+        device_kind: {
+            channel: {
+                'depth': {'freq_ms': 10, 'waveform': WAVEFORM_NAMES[0]},
+            }
+            for channel in ('channel_a', 'channel_b')
         }
-        for channel in ('channel_a', 'channel_b')
+        for device_kind in ('coyote', 'opossum')
     },
     'ws': {
         'master_uuid': None,
@@ -117,13 +110,76 @@ def merge_defaults(defaults, values):
 def apply_basic_settings(settings, basic_settings):
     """Build the runtime settings without mutating persisted dictionaries."""
     runtime = copy.deepcopy(settings)
-    for channel in ('channel_a', 'channel_b'):
-        basic_channel = basic_settings['dglab3'][channel]
-        runtime_channel = runtime['dglab3'][channel]
-        runtime_channel['avatar_params'] = copy.deepcopy(basic_channel['avatar_params'])
-        runtime_channel['mode'] = basic_channel['mode']
-        runtime_channel['strength_limit'] = basic_channel['strength_limit']
+    for device_kind in ('coyote', 'opossum'):
+        for channel in ('channel_a', 'channel_b'):
+            basic_channel = basic_settings['dglab3'][device_kind][channel]
+            runtime_channel = runtime['dglab3'][device_kind][channel]
+            runtime_channel['trigger_type'] = basic_channel['trigger_type']
+            runtime_channel['zone'] = basic_channel['zone']
+            runtime_channel['strength_limit'] = basic_channel['strength_limit']
     return runtime
+
+
+def migrate_sps_schema(settings, basic_settings):
+    """Drop legacy free-form parameters/modes while preserving safe user settings."""
+    old_runtime_root = copy.deepcopy(settings.get('dglab3', {}))
+    settings = merge_defaults(DEFAULT_SETTINGS, settings)
+    migrated_basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+    old_basic_root = basic_settings.get('dglab3', {})
+    migrated_runtime = copy.deepcopy(DEFAULT_SETTINGS['dglab3'])
+    for device_kind in ('coyote', 'opossum'):
+        for channel_name in ('channel_a', 'channel_b'):
+            shared_basic = old_basic_root.get(channel_name, {})
+            device_basic = old_basic_root.get(device_kind, {}).get(channel_name, {})
+            old_basic = device_basic if isinstance(device_basic, dict) and device_basic else shared_basic
+            new_basic = migrated_basic['dglab3'][device_kind][channel_name]
+
+            strength_limit = old_basic.get('strength_limit')
+            if not isinstance(strength_limit, int) and isinstance(shared_basic, dict):
+                strength_limit = shared_basic.get(f'{device_kind}_strength_limit')
+                if not isinstance(strength_limit, int):
+                    strength_limit = shared_basic.get('strength_limit')
+            if isinstance(strength_limit, int):
+                new_basic['strength_limit'] = strength_limit
+            if old_basic.get('trigger_type') in ('sps_socket', 'sps_plug'):
+                new_basic['trigger_type'] = old_basic['trigger_type']
+            if isinstance(old_basic.get('zone'), str) and old_basic['zone'].strip():
+                new_basic['zone'] = old_basic['zone'].strip()
+
+            shared_runtime = old_runtime_root.get(channel_name, {})
+            device_runtime = old_runtime_root.get(device_kind, {}).get(channel_name, {})
+            old_runtime = device_runtime if isinstance(device_runtime, dict) and device_runtime else shared_runtime
+            frequency = None
+            waveform = None
+            if isinstance(old_runtime.get('depth'), dict):
+                frequency = old_runtime['depth'].get('freq_ms')
+                waveform = old_runtime['depth'].get('waveform')
+            legacy_mode = old_runtime.get('mode_config')
+            if frequency is None and isinstance(legacy_mode, dict):
+                distance = legacy_mode.get('distance')
+                if isinstance(distance, dict):
+                    frequency = distance.get('freq_ms')
+            if waveform is None and isinstance(legacy_mode, dict):
+                shock = legacy_mode.get('shock')
+                if isinstance(shock, dict):
+                    waveform = shock.get('waveform')
+            default_depth = DEFAULT_SETTINGS['dglab3'][device_kind][channel_name]['depth']
+            if not isinstance(frequency, int) or not 0 <= frequency <= 255:
+                frequency = default_depth['freq_ms']
+            if waveform not in WAVEFORM_NAMES:
+                waveform = default_depth['waveform']
+            migrated_runtime[device_kind][channel_name] = {
+                'depth': {'freq_ms': frequency, 'waveform': waveform},
+            }
+    settings['dglab3'] = migrated_runtime
+    settings['dglab3'].pop('waveform_sync', None)
+    # v0.6 briefly exposed a direct-BLE Opossum mode. DG-LAB 4 APP reports
+    # Coyote and OVC as separate slots over the same Socket V4 connection.
+    settings.pop('device', None)
+    settings.pop('opossum', None)
+    settings['version'] = CONFIG_FILE_VERSION
+    migrated_basic['version'] = CONFIG_FILE_VERSION
+    return settings, migrated_basic
 
 
 def _validate_port(section, name):
@@ -180,41 +236,28 @@ def validate_config(settings, basic_settings):
     if float(chatbox['update_interval']) < 1.0:
         raise ValueError('chatbox.update_interval 不能小于 1 秒。')
 
-    for channel_name in ('channel_a', 'channel_b'):
-        basic_channel = basic_settings['dglab3'][channel_name]
-        if basic_channel['mode'] not in ('distance', 'shock'):
-            raise ValueError(f'{channel_name}.mode 只支持 distance 或 shock。')
-        if not isinstance(basic_channel['strength_limit'], int) or not 0 <= basic_channel['strength_limit'] <= 200:
-            raise ValueError(f'{channel_name}.strength_limit 必须是 0~200 之间的整数。')
-        avatar_params = basic_channel['avatar_params']
-        if not isinstance(avatar_params, list) or not avatar_params:
-            raise ValueError(f'{channel_name}.avatar_params 至少需要一个参数。')
-        if not all(
-            isinstance(item, str)
-            and item.startswith('/avatar/parameters/')
-            and not any(char.isspace() for char in item)
-            for item in avatar_params
-        ):
-            raise ValueError(f'{channel_name}.avatar_params 包含无效参数。')
-
-        mode_config = settings['dglab3'][channel_name]['mode_config']
-        trigger_range = mode_config['trigger_range']
-        bottom = float(trigger_range['bottom'])
-        top = float(trigger_range['top'])
-        if not 0 <= bottom < top <= 1:
-            raise ValueError(f'{channel_name}.trigger_range 必须满足 0 <= bottom < top <= 1。')
-        frequency = mode_config['distance']['freq_ms']
-        if not isinstance(frequency, int) or not 0 <= frequency <= 255:
-            raise ValueError(f'{channel_name}.distance.freq_ms 必须是 0~255 之间的整数。')
-        duration = float(mode_config['shock']['duration'])
-        if not 0.1 <= duration <= 10:
-            raise ValueError(f'{channel_name}.shock.duration 必须在 0.1~10 秒之间。')
-        try:
-            wave = json.loads(mode_config['shock']['wave'])
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError(f'{channel_name}.shock.wave 必须是合法 JSON 数组。') from exc
-        if not wave or not all(isinstance(item, str) and re.fullmatch(r'[0-9A-F]{16}', item) for item in wave):
-            raise ValueError(f'{channel_name}.shock.wave 包含无效波形。')
+    for device_kind in ('coyote', 'opossum'):
+        for channel_name in ('channel_a', 'channel_b'):
+            basic_channel = basic_settings['dglab3'][device_kind][channel_name]
+            path = f'{device_kind}.{channel_name}'
+            if basic_channel['trigger_type'] not in ('sps_socket', 'sps_plug'):
+                raise ValueError(f'{path}.trigger_type 只支持 sps_socket 或 sps_plug。')
+            limit = basic_channel['strength_limit']
+            if not isinstance(limit, int) or not 0 <= limit <= 200:
+                raise ValueError(f'{path}.strength_limit 必须是 0~200 之间的整数。')
+            zone = basic_channel['zone']
+            if (
+                not isinstance(zone, str)
+                or not zone.strip()
+                or (zone != '*' and ('/' in zone or any(char.isspace() for char in zone)))
+            ):
+                raise ValueError(f'{path}.zone 必须是有效的 SPS 部位 ID。')
+            frequency = settings['dglab3'][device_kind][channel_name]['depth']['freq_ms']
+            if not isinstance(frequency, int) or not 0 <= frequency <= 255:
+                raise ValueError(f'{path}.depth.freq_ms 必须是 0~255 之间的整数。')
+            waveform = settings['dglab3'][device_kind][channel_name]['depth']['waveform']
+            if waveform not in WAVEFORM_NAMES:
+                raise ValueError(f'{path}.depth.waveform 不是有效波形。')
 
     try:
         uuid.UUID(str(settings['ws']['master_uuid']))
@@ -249,23 +292,6 @@ def format_endpoint(host, port):
     return f'[{host}]:{port}' if ':' in host and not host.startswith('[') else f'{host}:{port}'
 
 
-def parse_parameter_lines(value):
-    params = []
-    seen = set()
-    for raw_line in str(value).splitlines():
-        param = raw_line.strip()
-        if not param or param.startswith('#'):
-            continue
-        if not param.startswith('/avatar/parameters/') or any(char.isspace() for char in param):
-            raise ValueError(f'无效的 Avatar 参数：{param}')
-        if param not in seen:
-            seen.add(param)
-            params.append(param)
-    if not params:
-        raise ValueError('每个通道至少需要一个 Avatar 参数。')
-    return params
-
-
 class ConfigManager:
     def __init__(self, app_dir=None, config_dir=None):
         self.app_dir = Path(app_dir) if app_dir else Path.cwd()
@@ -291,6 +317,11 @@ class ConfigManager:
         return value
 
     def _find_legacy_files(self):
+        for version in ('v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
+            for base in (self.config_dir, self.app_dir):
+                unified = base / f'settings-{version}.yaml'
+                if unified.exists():
+                    return unified
         candidates = (self.config_dir, self.app_dir)
         for base in candidates:
             advanced = base / 'settings-advanced-v0.2.yaml'
@@ -303,20 +334,25 @@ class ConfigManager:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             document = self._read_yaml(self.path)
-            settings = merge_defaults(DEFAULT_SETTINGS, document.get('settings', {}))
-            basic = merge_defaults(DEFAULT_BASIC_SETTINGS, document.get('channels', {}))
+            settings = document.get('settings', {})
+            basic = document.get('channels', {})
         else:
             legacy = self._find_legacy_files()
             if legacy:
-                advanced_path, basic_path = legacy
-                settings = merge_defaults(DEFAULT_SETTINGS, self._read_yaml(advanced_path))
-                basic = merge_defaults(DEFAULT_BASIC_SETTINGS, self._read_yaml(basic_path))
-                self.migrated_from = str(advanced_path.parent)
+                if isinstance(legacy, Path):
+                    document = self._read_yaml(legacy)
+                    settings = document.get('settings', {})
+                    basic = document.get('channels', {})
+                    self.migrated_from = str(legacy)
+                else:
+                    advanced_path, basic_path = legacy
+                    settings = self._read_yaml(advanced_path)
+                    basic = self._read_yaml(basic_path)
+                    self.migrated_from = str(advanced_path.parent)
             else:
                 settings, basic = self._new_config()
 
-        settings['version'] = CONFIG_FILE_VERSION
-        basic['version'] = CONFIG_FILE_VERSION
+        settings, basic = migrate_sps_schema(settings, basic)
         if settings['ws'].get('master_uuid') is None:
             settings['ws']['master_uuid'] = str(uuid.uuid4())
         if settings['api'].get('token') is None:

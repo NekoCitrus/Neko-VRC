@@ -35,7 +35,10 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-!shocking_vrchat.spec
+!neko_vrc.spec
+
+# Local VRChat avatar OSC exports may contain user-specific data.
+avtr_*.json
 
 # Installer logs
 pip-log.txt
