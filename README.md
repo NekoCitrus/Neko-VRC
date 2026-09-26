@@ -1,9 +1,5 @@
 # Neko-VRC
-<img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/636a17c1-cfc8-4a83-910e-6d861db08d8b" />
-<img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/1aa97c51-aa7f-43b4-a7c1-a790108d9daf" />
-<img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/c10c9228-88d1-4488-bee5-c0e53f47433b" />
-<img width="1102" height="750" alt="image" src="https://github.com/user-attachments/assets/6396a63d-05ba-4a79-b396-1bafb5c2740b" />
-
+[基本设置](assets/screenshots/general.png) · [郊狼 A/B](assets/screenshots/coyote.png) · [负鼠 A/B](assets/screenshots/opossum.png) · [运行调试](assets/screenshots/debug.png) · [版权信息](assets/screenshots/about.png)
 
 [English version](README_en.md)
 
@@ -28,7 +24,7 @@
 - **基本设置**：编辑 Chatbox、后台运行与 SteamVR 跟随启动开关。设备由 DG-LAB 4 APP 通过 Socket V4 上报，程序通过 OSCQuery 供 VRChat 自动发现。
 - **郊狼 A/B**：郊狼 A/B 各自设置 SPS 触发、部位、波形和强度上限；上限与 `intensityMax` 取较小值。
 - **负鼠 A/B**：负鼠 A/B 也有完全独立的触发、部位、波形和强度上限。
-- **运行调试**：显示设备连接、触发方式、选择范围、当前触发部位、深度与设备通道强度。
+- **运行调试**：显示设备连接、触发方式、选择范围、当前触发部位、深度，以及程序最近一次发送给 APP 的四个波形强度采样值。
 - **版权信息**：显示项目、代码来源、前端贡献者与开源许可。
 
 程序当前接受一个 DG-LAB APP 连接，但会同时控制该 APP 上报的所有受支持郊狼与负鼠槽位。
@@ -212,7 +208,7 @@ PyInstaller 生成无控制台的单文件 `dist\Neko-VRC.exe`，配置不会写
 ### 为什么强度一直是最大可用值
 
 - 每台郊狼的通道强度取自身 `intensityMax` 与“郊狼 A/B”页面对应上限的较小值；负鼠使用“负鼠 A/B”页面中的独立上限。
-- SPS 插入深度 `0～1` 线性缩放波形幅值；运行调试中会分别显示深度和设备通道强度。
+- SPS 插入深度 `0～1` 线性缩放波形幅值；运行调试中会分别显示深度和最近发送给 APP 的四个波形强度采样值（`0～100`）。
 
 ### APP 扫码无法连接/连接超时
 

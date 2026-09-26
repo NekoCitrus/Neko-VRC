@@ -1,5 +1,9 @@
 # Neko-VRC
 
+| General | Coyote A/B | Opossum A/B | Runtime Debug | Copyright |
+|---|---|---|---|---|
+| ![General](assets/screenshots/general.png) | ![Coyote A/B](assets/screenshots/coyote.png) | ![Opossum A/B](assets/screenshots/opossum.png) | ![Runtime Debug](assets/screenshots/debug.png) | ![Copyright](assets/screenshots/about.png) |
+
 > This document is translated by AI.
 
 A small tool that reads SPS/OGB penetration depth from VRChat OSC and controls either a Coyote DG-LAB 3.0 or an Opossum vibration controller.
@@ -23,7 +27,7 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 - **General:** Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
 - **Coyote A/B:** independent trigger type, zone scope, waveform, and strength limit for Coyote channels A and B. Each limit is capped by the slot's reported `intensityMax`.
 - **Opossum A/B:** independent trigger type, zone scope, waveform, and strength limit for Opossum channels A and B; these settings do not reuse Coyote values.
-- **Runtime Debug:** device connection, trigger type, selected scope, active zone, depth, and device-channel strength.
+- **Runtime Debug:** device connection, trigger type, selected scope, active zone, depth, and the four waveform-amplitude samples most recently sent to the App.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
 Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
@@ -187,7 +191,7 @@ PyInstaller produces the console-free single file `dist\Neko-VRC.exe`. Configura
 ### Why is the strength always at the maximum available value?
 
 - Coyote uses the lower of its reported `intensityMax` and the matching limit on **Coyote A/B**; Opossum uses its matching independent limit on **Opossum A/B**.
-- SPS penetration depth `0..1` linearly scales waveform amplitude. Runtime Debug reports depth and device-channel strength separately.
+- SPS penetration depth `0..1` linearly scales waveform amplitude. Runtime Debug reports depth and the four waveform-amplitude samples (`0..100`) most recently sent to the App.
 
 ### The APP cannot connect/connection times out when scanning the QR code.
 
