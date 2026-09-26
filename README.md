@@ -104,8 +104,8 @@ settings:
 - Avatar 必须包含兼容的 SPS/OGB 参数。
 - Socket 参数路径应以 `/avatar/parameters/OGB/Orf/` 开头。
 - Plug 参数路径应以 `/avatar/parameters/OGB/Pen/` 开头。
-- 程序会从 `/avatar/change` 对应的 OSC Avatar JSON 中提取部位列表；下拉框中的 `*` 表示“任何当前正在触发的部位”，不再接受手工 OSC 路径。
-- 如果下拉列表为空，请先在 VRChat 中切换到目标 Avatar，并确认 VRChat 已生成对应的 OSC JSON。
+- 程序会从 VRChat OSCQuery 的 `/avatar` 参数树提取部位列表；下拉框中的 `*` 表示“任何当前正在触发的部位”，不再接受手工 OSC 路径。
+- 如果下拉列表为空，请先在 VRChat 中切换到目标 Avatar，并确认 VRChat OSC 已启用且模型公开了兼容的 SPS/OGB 参数。
 
 ## 高级设置参考
 

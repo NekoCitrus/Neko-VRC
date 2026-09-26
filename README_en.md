@@ -88,7 +88,7 @@ settings:
 - The Avatar must expose compatible SPS/OGB parameters.
 - Socket paths start with `/avatar/parameters/OGB/Orf/`.
 - Plug paths start with `/avatar/parameters/OGB/Pen/`.
-- The application extracts zones from the OSC JSON matching VRChat's `/avatar/change` ID. `*` means any currently active zone; a specific zone ID is also accepted.
+- The application extracts zones from VRChat's live OSCQuery `/avatar` parameter tree. `*` means any currently active zone; a specific zone ID is also accepted. If the list is empty, verify that VRChat OSC is enabled and the Avatar exposes compatible SPS/OGB parameters.
 
 ## Advanced Configuration Reference
 
