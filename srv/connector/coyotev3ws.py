@@ -132,6 +132,17 @@ class DGConnection:
         channel = self._validate_channel(channel)
         await self.set_strength(channel=channel, mode='2', value=int(self.get_upper_strength(channel) * value))
 
+    async def apply_settings(self, settings):
+        """Update channel caps without reconnecting the App."""
+        self.SETTINGS = settings
+        self.strength_limit = {
+            'A': settings['dglab3']['coyote']['channel_a']['strength_limit'],
+            'B': settings['dglab3']['coyote']['channel_b']['strength_limit'],
+        }
+        for channel in ('A', 'B'):
+            if self.strength[channel] != 0:
+                await self.set_strength(channel, value=self.get_upper_strength(channel))
+
     async def send_wave(self, channel='A', wavestr=DEFAULT_WAVE, device_kind='coyote'):
         if device_kind != 'coyote':
             return

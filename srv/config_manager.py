@@ -7,27 +7,45 @@ from pathlib import Path
 
 import yaml
 
-from srv import WAVEFORM_NAMES
+from srv import WAVEFORM_NAMES_BY_DEVICE
 
 
 # Keep the legacy data directory so existing users retain their settings and
 # SteamVR manifest when upgrading to the renamed application.
 APP_NAME = 'ShockingVRChat'
 PRODUCT_NAME = 'Neko-VRC'
-CONFIG_FILE_VERSION = 'v0.8'
+CONFIG_FILE_VERSION = 'v0.9'
 CONFIG_FILENAME = f'settings-{CONFIG_FILE_VERSION}.yaml'
+
+DEFAULT_EXTRA_PARAMETERS = (
+    '/avatar/parameters/Shock/TouchAreaA',
+    '/avatar/parameters/Shock/TouchAreaC',
+    '/avatar/parameters/Shock/wildcard/*',
+)
 
 DEFAULT_BASIC_SETTINGS = {
     'dglab3': {
         device_kind: {
             'channel_a': {
-                'trigger_type': 'sps_socket',
-                'zone': '*',
+                'socket_zone': '*',
+                'plug_zone': '*',
+                'extra_parameters': {
+                    'enabled': True,
+                    'paths': list(DEFAULT_EXTRA_PARAMETERS),
+                    'bottom': 0.0,
+                    'top': 1.0,
+                },
                 'strength_limit': 100,
             },
             'channel_b': {
-                'trigger_type': 'sps_plug',
-                'zone': '*',
+                'socket_zone': '*',
+                'plug_zone': '*',
+                'extra_parameters': {
+                    'enabled': True,
+                    'paths': list(DEFAULT_EXTRA_PARAMETERS),
+                    'bottom': 0.0,
+                    'top': 1.0,
+                },
                 'strength_limit': 100,
             },
         }
@@ -41,7 +59,10 @@ DEFAULT_SETTINGS = {
     'dglab3': {
         device_kind: {
             channel: {
-                'depth': {'freq_ms': 10, 'waveform': WAVEFORM_NAMES[0]},
+                'depth': {
+                    'freq_ms': 10,
+                    'waveform': WAVEFORM_NAMES_BY_DEVICE[device_kind][0],
+                },
             }
             for channel in ('channel_a', 'channel_b')
         }
@@ -114,14 +135,15 @@ def apply_basic_settings(settings, basic_settings):
         for channel in ('channel_a', 'channel_b'):
             basic_channel = basic_settings['dglab3'][device_kind][channel]
             runtime_channel = runtime['dglab3'][device_kind][channel]
-            runtime_channel['trigger_type'] = basic_channel['trigger_type']
-            runtime_channel['zone'] = basic_channel['zone']
+            runtime_channel['socket_zone'] = basic_channel['socket_zone']
+            runtime_channel['plug_zone'] = basic_channel['plug_zone']
+            runtime_channel['extra_parameters'] = copy.deepcopy(basic_channel['extra_parameters'])
             runtime_channel['strength_limit'] = basic_channel['strength_limit']
     return runtime
 
 
 def migrate_sps_schema(settings, basic_settings):
-    """Drop legacy free-form parameters/modes while preserving safe user settings."""
+    """Migrate old single-trigger channels to the automatic max-source model."""
     old_runtime_root = copy.deepcopy(settings.get('dglab3', {}))
     settings = merge_defaults(DEFAULT_SETTINGS, settings)
     migrated_basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
@@ -141,10 +163,32 @@ def migrate_sps_schema(settings, basic_settings):
                     strength_limit = shared_basic.get('strength_limit')
             if isinstance(strength_limit, int):
                 new_basic['strength_limit'] = strength_limit
-            if old_basic.get('trigger_type') in ('sps_socket', 'sps_plug'):
-                new_basic['trigger_type'] = old_basic['trigger_type']
-            if isinstance(old_basic.get('zone'), str) and old_basic['zone'].strip():
-                new_basic['zone'] = old_basic['zone'].strip()
+            for trigger_type, field in (
+                ('sps_socket', 'socket_zone'),
+                ('sps_plug', 'plug_zone'),
+            ):
+                configured = old_basic.get(field)
+                if isinstance(configured, str) and configured.strip():
+                    new_basic[field] = configured.strip()
+                elif (
+                    old_basic.get('trigger_type') == trigger_type
+                    and isinstance(old_basic.get('zone'), str)
+                    and old_basic['zone'].strip()
+                ):
+                    new_basic[field] = old_basic['zone'].strip()
+
+            old_extra = old_basic.get('extra_parameters')
+            if isinstance(old_extra, dict):
+                new_basic['extra_parameters'] = merge_defaults(
+                    new_basic['extra_parameters'], old_extra,
+                )
+            elif isinstance(old_basic.get('avatar_params'), list):
+                paths = [
+                    str(item).strip() for item in old_basic['avatar_params']
+                    if str(item).strip()
+                ]
+                if paths:
+                    new_basic['extra_parameters']['paths'] = paths
 
             shared_runtime = old_runtime_root.get(channel_name, {})
             device_runtime = old_runtime_root.get(device_kind, {}).get(channel_name, {})
@@ -166,7 +210,7 @@ def migrate_sps_schema(settings, basic_settings):
             default_depth = DEFAULT_SETTINGS['dglab3'][device_kind][channel_name]['depth']
             if not isinstance(frequency, int) or not 0 <= frequency <= 255:
                 frequency = default_depth['freq_ms']
-            if waveform not in WAVEFORM_NAMES:
+            if waveform not in WAVEFORM_NAMES_BY_DEVICE[device_kind]:
                 waveform = default_depth['waveform']
             migrated_runtime[device_kind][channel_name] = {
                 'depth': {'freq_ms': frequency, 'waveform': waveform},
@@ -240,23 +284,38 @@ def validate_config(settings, basic_settings):
         for channel_name in ('channel_a', 'channel_b'):
             basic_channel = basic_settings['dglab3'][device_kind][channel_name]
             path = f'{device_kind}.{channel_name}'
-            if basic_channel['trigger_type'] not in ('sps_socket', 'sps_plug'):
-                raise ValueError(f'{path}.trigger_type 只支持 sps_socket 或 sps_plug。')
             limit = basic_channel['strength_limit']
             if not isinstance(limit, int) or not 0 <= limit <= 200:
                 raise ValueError(f'{path}.strength_limit 必须是 0~200 之间的整数。')
-            zone = basic_channel['zone']
-            if (
-                not isinstance(zone, str)
-                or not zone.strip()
-                or (zone != '*' and ('/' in zone or any(char.isspace() for char in zone)))
+            for field in ('socket_zone', 'plug_zone'):
+                zone = basic_channel[field]
+                if (
+                    not isinstance(zone, str)
+                    or not zone.strip()
+                    or (zone != '*' and ('/' in zone or any(char.isspace() for char in zone)))
+                ):
+                    raise ValueError(f'{path}.{field} 必须是有效的 SPS 部位 ID。')
+            extra = basic_channel['extra_parameters']
+            if not isinstance(extra.get('enabled'), bool):
+                raise ValueError(f'{path}.extra_parameters.enabled 必须是布尔值。')
+            paths = extra.get('paths')
+            if not isinstance(paths, list) or any(
+                not isinstance(item, str) or not item.startswith('/avatar/parameters/')
+                for item in paths
             ):
-                raise ValueError(f'{path}.zone 必须是有效的 SPS 部位 ID。')
+                raise ValueError(f'{path}.extra_parameters.paths 包含无效 OSC 参数。')
+            bottom, top = extra.get('bottom'), extra.get('top')
+            if (
+                not isinstance(bottom, (int, float))
+                or not isinstance(top, (int, float))
+                or float(bottom) >= float(top)
+            ):
+                raise ValueError(f'{path}.extra_parameters 范围无效。')
             frequency = settings['dglab3'][device_kind][channel_name]['depth']['freq_ms']
             if not isinstance(frequency, int) or not 0 <= frequency <= 255:
                 raise ValueError(f'{path}.depth.freq_ms 必须是 0~255 之间的整数。')
             waveform = settings['dglab3'][device_kind][channel_name]['depth']['waveform']
-            if waveform not in WAVEFORM_NAMES:
+            if waveform not in WAVEFORM_NAMES_BY_DEVICE[device_kind]:
                 raise ValueError(f'{path}.depth.waveform 不是有效波形。')
 
     try:
@@ -317,7 +376,7 @@ class ConfigManager:
         return value
 
     def _find_legacy_files(self):
-        for version in ('v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
+        for version in ('v0.8', 'v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
             for base in (self.config_dir, self.app_dir):
                 unified = base / f'settings-{version}.yaml'
                 if unified.exists():

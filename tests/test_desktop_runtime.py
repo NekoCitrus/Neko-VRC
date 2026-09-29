@@ -57,7 +57,7 @@ class ConfigManagerTests(unittest.TestCase):
             manager = ConfigManager(app_dir=Path(root) / 'app', config_dir=Path(root) / 'config')
             settings, basic = manager.load()
             self.assertTrue(manager.path.exists())
-            self.assertEqual(manager.path.name, 'settings-v0.8.yaml')
+            self.assertEqual(manager.path.name, 'settings-v0.9.yaml')
             self.assertIsNotNone(settings['ws']['master_uuid'])
             self.assertEqual(basic['dglab3']['coyote']['channel_a']['strength_limit'], 100)
             self.assertEqual(basic['dglab3']['opossum']['channel_a']['strength_limit'], 100)
@@ -188,7 +188,7 @@ class ConfigManagerTests(unittest.TestCase):
             )
             self.assertEqual(
                 _settings['dglab3']['opossum']['channel_b']['depth']['waveform'],
-                srv.WAVEFORM_NAMES[2],
+                srv.WAVEFORM_NAMES_BY_DEVICE['opossum'][0],
             )
             self.assertTrue(manager.path.exists())
             self.assertTrue(legacy_path.exists())
@@ -215,15 +215,15 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertNotIn('device', saved['settings'])
             self.assertNotIn('opossum', saved['settings'])
 
-    def test_default_channels_use_one_sps_trigger_each(self):
+    def test_default_channels_enable_all_depth_sources(self):
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
         for device_kind in ('coyote', 'opossum'):
-            self.assertEqual(basic['dglab3'][device_kind]['channel_a']['trigger_type'], 'sps_socket')
-            self.assertEqual(basic['dglab3'][device_kind]['channel_b']['trigger_type'], 'sps_plug')
-            self.assertEqual(basic['dglab3'][device_kind]['channel_a']['zone'], '*')
-            self.assertEqual(basic['dglab3'][device_kind]['channel_b']['zone'], '*')
-            self.assertNotIn('avatar_params', basic['dglab3'][device_kind]['channel_a'])
-            self.assertNotIn('mode', basic['dglab3'][device_kind]['channel_a'])
+            for channel in ('channel_a', 'channel_b'):
+                config = basic['dglab3'][device_kind][channel]
+                self.assertEqual(config['socket_zone'], '*')
+                self.assertEqual(config['plug_zone'], '*')
+                self.assertTrue(config['extra_parameters']['enabled'])
+                self.assertEqual(len(config['extra_parameters']['paths']), 3)
 
     def test_steamvr_auto_start_requires_a_boolean(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
@@ -302,6 +302,28 @@ class UDPRelayTests(unittest.IsolatedAsyncioTestCase):
             relay_transport.close()
             for receiver in receivers:
                 receiver.close()
+
+
+class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reconfigures_existing_handlers_and_dispatcher_in_place(self):
+        settings = copy.deepcopy(DEFAULT_SETTINGS)
+        basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        settings['chatbox']['enable'] = False
+        runtime = DeviceRuntime(apply_basic_settings(settings, basic))
+        runtime.dispatcher = runtime._build_dispatcher()
+        handlers = tuple(runtime.handlers)
+
+        basic['dglab3']['coyote']['channel_a']['plug_zone'] = 'Hot_Plug'
+        basic['dglab3']['coyote']['channel_a']['strength_limit'] = 75
+        updated = apply_basic_settings(settings, basic)
+        await runtime._apply_settings(updated)
+
+        self.assertEqual(tuple(runtime.handlers), handlers)
+        self.assertEqual(runtime.handlers[0].plug_zone, 'Hot_Plug')
+        self.assertTrue(any(
+            '/OGB/Pen/Hot_Plug/' in address
+            for address, _binding in runtime.handlers[0].osc_bindings()
+        ))
 
 
 class OSCQueryServiceTests(unittest.TestCase):
@@ -459,24 +481,79 @@ class V4ConnectionStateTests(unittest.IsolatedAsyncioTestCase):
         strength_requests = [data for method, data in requests if method == 'device.op']
         self.assertEqual(
             [(item['s'], item['c'], item['v']) for item in strength_requests],
-            [('coyote', 0, 10), ('coyote', 1, 30), ('opossum', 0, 110), ('opossum', 1, 110)],
+            [('coyote', 0, 10), ('coyote', 1, 30)],
         )
+        self.assertEqual(connection.device_states['opossum']['strength'], {'A': 10, 'B': 20})
 
         requests.clear()
         await connection.send_wave('A', '["1919181864643219"]')
-        waves = [data for method, data in requests if method == 'device.op']
+        strength_requests = [
+            data for method, data in requests
+            if method == 'device.op' and data['t'] in (3, 7)
+        ]
+        self.assertEqual(
+            [(item['s'], item['c'], item['v']) for item in strength_requests],
+            [('opossum', 0, 110)],
+        )
+        waves = [
+            data for method, data in requests
+            if method == 'device.op' and data['t'] == 0
+        ]
         self.assertEqual([item['s'] for item in waves], ['coyote', 'opossum'])
         self.assertEqual(waves[0]['v'], ['1919181864643219'])
         self.assertEqual(waves[1]['v'], ['0A0A0A0A64643219'])
 
         requests.clear()
+        await connection.clear_wave('A', device_kind='opossum')
+        self.assertEqual(
+            requests,
+            [
+                ('device.op.clear', {'s': 'opossum', 'c': 0}),
+                ('device.op', {'s': 'opossum', 't': 7, 'c': 0, 'p': 1, 'v': 0}),
+            ],
+        )
+        self.assertEqual(connection.device_states['opossum']['strength']['A'], 0)
+
+        requests.clear()
         await connection.send_wave('A', '["1919181864643219"]', device_kind='opossum')
-        waves = [data for method, data in requests if method == 'device.op']
+        waves = [
+            data for method, data in requests
+            if method == 'device.op' and data['t'] == 0
+        ]
         self.assertEqual([item['s'] for item in waves], ['opossum'])
         self.assertEqual(waves[0]['v'], ['0A0A0A0A64643219'])
 
 
 class ServiceControllerTests(unittest.TestCase):
+    def test_apply_settings_keeps_the_existing_runtime(self):
+        settings = copy.deepcopy(DEFAULT_SETTINGS)
+        basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        settings['SERVER_IP'] = '127.0.0.1'
+        settings['ws']['master_uuid'] = '86c053e8-4ce1-466b-b123-9e2944b8c490'
+        original_settings = shocking_vrchat.SETTINGS
+        original_basic = shocking_vrchat.SETTINGS_BASIC
+        applied = []
+
+        class Runtime:
+            def apply_settings(self, value):
+                applied.append(value)
+
+        controller = ServiceController()
+        runtime = Runtime()
+        controller.runtime = runtime
+        shocking_vrchat.SETTINGS = copy.deepcopy(settings)
+        shocking_vrchat.SETTINGS_BASIC = copy.deepcopy(basic)
+        try:
+            basic['dglab3']['opossum']['channel_a']['strength_limit'] = 77
+            controller.apply_settings(settings, basic)
+            self.assertIs(controller.runtime, runtime)
+            self.assertEqual(
+                applied[0]['dglab3']['opossum']['channel_a']['strength_limit'], 77,
+            )
+        finally:
+            shocking_vrchat.SETTINGS = original_settings
+            shocking_vrchat.SETTINGS_BASIC = original_basic
+
     def test_status_api_reports_the_actual_device_type(self):
         connection = SimpleNamespace(
             is_device_ready=lambda: True,
@@ -527,8 +604,7 @@ class ServiceControllerTests(unittest.TestCase):
         settings['web_server']['listen_port'] = free_tcp_port()
         settings['osc']['listen_port'] = free_udp_port()
         settings['chatbox']['enable'] = False
-        basic['dglab3']['coyote']['channel_a']['trigger_type'] = 'sps_plug'
-        basic['dglab3']['coyote']['channel_a']['zone'] = 'Integration'
+        basic['dglab3']['coyote']['channel_a']['plug_zone'] = 'Integration'
         controller = ServiceController()
         loop_errors = []
         try:
@@ -576,8 +652,7 @@ class ServiceControllerTests(unittest.TestCase):
         settings['web_server']['listen_port'] = free_tcp_port()
         settings['osc']['listen_port'] = free_udp_port()
         settings['chatbox']['enable'] = False
-        basic['dglab3']['coyote']['channel_a']['trigger_type'] = 'sps_plug'
-        basic['dglab3']['coyote']['channel_a']['zone'] = '*'
+        basic['dglab3']['coyote']['channel_a']['plug_zone'] = '*'
         controller = ServiceController()
         client = None
         try:
@@ -647,8 +722,7 @@ class ServiceControllerTests(unittest.TestCase):
         settings['web_server']['listen_port'] = free_tcp_port()
         settings['osc']['listen_port'] = free_udp_port()
         settings['chatbox']['enable'] = False
-        basic['dglab3']['coyote']['channel_a']['trigger_type'] = 'sps_socket'
-        basic['dglab3']['coyote']['channel_a']['zone'] = 'Integration_Socket'
+        basic['dglab3']['coyote']['channel_a']['socket_zone'] = 'Integration_Socket'
         controller = ServiceController()
         client = None
         try:
@@ -732,8 +806,9 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
         settings['osc']['listen_port'] = free_udp_port()
         settings['chatbox']['enable'] = False
         for device_kind in ('coyote', 'opossum'):
-            basic['dglab3'][device_kind]['channel_a']['trigger_type'] = 'sps_plug'
-            basic['dglab3'][device_kind]['channel_a']['zone'] = 'V4_Test'
+            basic['dglab3'][device_kind]['channel_a']['plug_zone'] = 'V4_Test'
+            basic['dglab3'][device_kind]['channel_b']['socket_zone'] = 'Unused'
+            basic['dglab3'][device_kind]['channel_b']['plug_zone'] = 'Unused'
         return settings, basic
 
     async def wait_for_message_type(self, websocket, frame_type, timeout=2):
@@ -857,7 +932,9 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_v4_opossum_is_auto_detected_and_receives_ovc_waveform(self):
         settings, basic = self.make_settings()
-        settings['dglab3']['opossum']['channel_a']['depth']['waveform'] = '压缩'
+        settings['dglab3']['opossum']['channel_a']['depth']['waveform'] = (
+            srv.WAVEFORM_NAMES_BY_DEVICE['opossum'][6]
+        )
         controller = ServiceController()
         client = None
         try:
@@ -894,8 +971,14 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(snapshot['device_type'], 'OVC_1')
                 self.assertEqual(snapshot['device_name'], '负鼠振动控制器')
 
+                # A zero-intensity Opossum must remain silent until OSC
+                # produces a real SPS trigger.
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(websocket.recv(), 0.2)
+
                 client = SimpleUDPClient('127.0.0.1', settings['osc']['listen_port'])
                 client.send_message('/avatar/parameters/OGB/Pen/V4_Test/PenOthers', [0.5])
+                strength_operation = None
                 operation = None
                 deadline = asyncio.get_running_loop().time() + 2
                 while asyncio.get_running_loop().time() < deadline:
@@ -904,9 +987,13 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
                     ))
                     data = frame.get('data') or {}
                     candidate = data.get('data') or {}
+                    if data.get('m') == 'device.op' and candidate.get('t') == 3:
+                        strength_operation = candidate
                     if data.get('m') == 'device.op' and candidate.get('t') == 0:
                         operation = candidate
                         break
+                self.assertIsNotNone(strength_operation)
+                self.assertEqual(strength_operation['v'], 100)
                 self.assertIsNotNone(operation)
                 self.assertEqual(operation['s'], 'ovc-slot')
                 self.assertTrue(operation['v'][0].startswith('0A0A0A0A'))
@@ -918,10 +1005,15 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_v4_socket_controls_coyote_and_opossum_independently(self):
         settings, basic = self.make_settings()
-        settings['dglab3']['coyote']['channel_a']['depth']['waveform'] = srv.WAVEFORM_NAMES[6]
-        settings['dglab3']['opossum']['channel_a']['depth']['waveform'] = srv.WAVEFORM_NAMES[6]
+        settings['dglab3']['coyote']['channel_a']['depth']['waveform'] = (
+            srv.WAVEFORM_NAMES_BY_DEVICE['coyote'][6]
+        )
+        settings['dglab3']['opossum']['channel_a']['depth']['waveform'] = (
+            srv.WAVEFORM_NAMES_BY_DEVICE['opossum'][6]
+        )
         for device_kind in ('coyote', 'opossum'):
-            basic['dglab3'][device_kind]['channel_b']['zone'] = 'Unused'
+            basic['dglab3'][device_kind]['channel_b']['socket_zone'] = 'Unused'
+            basic['dglab3'][device_kind]['channel_b']['plug_zone'] = 'Unused'
         basic['dglab3']['coyote']['channel_a']['strength_limit'] = 80
         basic['dglab3']['coyote']['channel_b']['strength_limit'] = 60
         basic['dglab3']['opossum']['channel_a']['strength_limit'] = 120
@@ -967,7 +1059,7 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
 
                 strength_operations = []
                 deadline = asyncio.get_running_loop().time() + 2
-                while len(strength_operations) < 4:
+                while len(strength_operations) < 2:
                     remaining = deadline - asyncio.get_running_loop().time()
                     self.assertGreater(remaining, 0)
                     frame = json.loads(await asyncio.wait_for(websocket.recv(), remaining))
@@ -980,8 +1072,6 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
                     [
                         ('coyote-slot', 0, 60),
                         ('coyote-slot', 1, 40),
-                        ('opossum-slot', 0, 90),
-                        ('opossum-slot', 1, 90),
                     ],
                 )
 
@@ -1013,7 +1103,27 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
                 opossum_frame = wave_operations['opossum-slot']['v'][0]
                 self.assertNotEqual(coyote_frame[:8], '0A0A0A0A')
                 self.assertEqual(opossum_frame[:8], '0A0A0A0A')
-                self.assertEqual(coyote_frame[8:], opossum_frame[8:])
+                self.assertNotEqual(coyote_frame, opossum_frame)
+                coyote_strengths = tuple(bytes.fromhex(coyote_frame[8:]))
+                opossum_strengths = tuple(bytes.fromhex(opossum_frame[8:]))
+                deadline = time.monotonic() + 1
+                sent_strengths = {'coyote': (), 'opossum': ()}
+                while time.monotonic() < deadline:
+                    snapshot = controller.snapshot()
+                    sent_strengths = {
+                        device_kind: tuple(
+                            snapshot['device_channels'][device_kind]['A'].get('sent_strengths', ())
+                        )
+                        for device_kind in ('coyote', 'opossum')
+                    }
+                    if sent_strengths == {
+                        'coyote': coyote_strengths,
+                        'opossum': opossum_strengths,
+                    }:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertEqual(sent_strengths['coyote'], coyote_strengths)
+                self.assertEqual(sent_strengths['opossum'], opossum_strengths)
         finally:
             if client is not None:
                 client._sock.close()
@@ -1070,7 +1180,7 @@ class DesktopApplicationTests(unittest.TestCase):
         self.assertEqual(
             COPYRIGHT_ENTRIES,
             (
-                ('DG-LAB', 'https://github.com/dungeonlab-open', '设备、开放协议与技术生态'),
+                ('DG-LAB', 'https://github.com/dungeonlab-open', '设备协议与官方波形'),
                 ('Shocking-VRChat', 'https://github.com/VRChatNext/Shocking-VRChat', '原始项目与代码来源'),
                 ('DG-LAB-VRCOSC', 'https://github.com/ccvrc/DG-LAB-VRCOSC', 'Chatbox 发送部分来源'),
                 ('OscGoesBrrr / OSC Toys', 'https://osc.toys', 'SPS/OGB 深度算法与参数协议参考'),
@@ -1094,7 +1204,7 @@ class DesktopApplicationTests(unittest.TestCase):
             def _read_form(self):
                 raise AssertionError('busy operation must not read or save the form')
 
-        DesktopApplication._save_and_restart(BusyApplication())
+        DesktopApplication._save_and_apply(BusyApplication())
         self.assertEqual(calls, [('当前操作尚未完成，请稍候再试。', True)])
 
 

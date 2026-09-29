@@ -233,13 +233,18 @@ class OSCQueryService:
         for device_kind in ('coyote', 'opossum'):
             for channel in ('channel_a', 'channel_b'):
                 config = self.settings['dglab3'][device_kind][channel]
-                paths.update(
-                    address
-                    for address, _signal in sps_osc_bindings(
-                        config['trigger_type'],
-                        config['zone'],
+                for trigger_type, field in (
+                    ('sps_socket', 'socket_zone'),
+                    ('sps_plug', 'plug_zone'),
+                ):
+                    paths.update(
+                        address
+                        for address, _signal in sps_osc_bindings(
+                            trigger_type, config[field],
+                        )
                     )
-                )
+                if config['extra_parameters']['enabled']:
+                    paths.update(config['extra_parameters']['paths'])
         return sorted(path for path in paths if path.startswith('/avatar/'))
 
     def root_node(self):

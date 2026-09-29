@@ -16,7 +16,7 @@ from pathlib import Path
 import qrcode
 from loguru import logger
 
-from srv import WAVEFORM_NAMES
+from srv import WAVEFORM_NAMES_BY_DEVICE
 from srv.config_manager import validate_config
 from srv.sps_depth import SPS_PLUG, SPS_SOCKET, SPSZone
 from srv.steamvr_autostart import SteamVRAutoStartError, configure_steamvr_autostart
@@ -82,7 +82,6 @@ WM_SHOW_EXISTING = WM_APP + 4
 WS_CHILD = 0x40000000
 WS_VISIBLE = 0x10000000
 WS_TABSTOP = 0x00010000
-WS_GROUP = 0x00020000
 WS_VSCROLL = 0x00200000
 WS_OVERLAPPED = 0x00000000
 WS_CAPTION = 0x00C00000
@@ -91,7 +90,6 @@ WS_MINIMIZEBOX = 0x00020000
 WS_EX_CLIENTEDGE = 0x00000200
 BS_PUSHBUTTON = 0x00000000
 BS_AUTOCHECKBOX = 0x00000003
-BS_AUTORADIOBUTTON = 0x00000009
 BS_GROUPBOX = 0x00000007
 ES_LEFT = 0x0000
 ES_MULTILINE = 0x0004
@@ -144,21 +142,13 @@ ID_START = 110
 ID_STOP = 111
 ID_SAVE_RESTART = 112
 ID_EXIT = 113
-ID_TRIGGER_COYOTE_A_SOCKET = 120
-ID_TRIGGER_COYOTE_A_PLUG = 121
-ID_TRIGGER_COYOTE_B_SOCKET = 122
-ID_TRIGGER_COYOTE_B_PLUG = 123
-ID_TRIGGER_OPOSSUM_A_SOCKET = 124
-ID_TRIGGER_OPOSSUM_A_PLUG = 125
-ID_TRIGGER_OPOSSUM_B_SOCKET = 126
-ID_TRIGGER_OPOSSUM_B_PLUG = 127
 ID_TRAY_SHOW = 201
 ID_TRAY_START = 202
 ID_TRAY_STOP = 203
 ID_TRAY_EXIT = 204
 
 COPYRIGHT_ENTRIES = (
-    ('DG-LAB', 'https://github.com/dungeonlab-open', '设备、开放协议与技术生态'),
+    ('DG-LAB', 'https://github.com/dungeonlab-open', '设备协议与官方波形'),
     ('Shocking-VRChat', 'https://github.com/VRChatNext/Shocking-VRChat', '原始项目与代码来源'),
     ('DG-LAB-VRCOSC', 'https://github.com/ccvrc/DG-LAB-VRCOSC', 'Chatbox 发送部分来源'),
     ('OscGoesBrrr / OSC Toys', 'https://osc.toys', 'SPS/OGB 深度算法与参数协议参考'),
@@ -297,24 +287,17 @@ class DesktopApplication:
         self.qr_matrix = []
         self._last_snapshot = None
         self.sps_zone_options = {
-            SPS_SOCKET: [SPSZone(SPS_SOCKET, '*', '任何当前正在触发的 Socket')],
-            SPS_PLUG: [SPSZone(SPS_PLUG, '*', '任何当前正在触发的 Plug')],
+            SPS_SOCKET: [SPSZone(SPS_SOCKET, '*', '任何正在触发的 Socket')],
+            SPS_PLUG: [SPSZone(SPS_PLUG, '*', '任何正在触发的 Plug')],
         }
-        self.channel_trigger_types = {}
         self.channel_zone_selections = {}
         for device_kind in ('coyote', 'opossum'):
             for channel in ('A', 'B'):
                 key = (device_kind, channel)
                 config = self.basic_settings['dglab3'][device_kind][f'channel_{channel.lower()}']
-                trigger_type = config['trigger_type']
-                self.channel_trigger_types[key] = trigger_type
                 self.channel_zone_selections[key] = {
-                    SPS_SOCKET: self._initial_zone(
-                        SPS_SOCKET, config['zone'] if trigger_type == SPS_SOCKET else None,
-                    ),
-                    SPS_PLUG: self._initial_zone(
-                        SPS_PLUG, config['zone'] if trigger_type == SPS_PLUG else None,
-                    ),
+                    SPS_SOCKET: self._initial_zone(SPS_SOCKET, config['socket_zone']),
+                    SPS_PLUG: self._initial_zone(SPS_PLUG, config['plug_zone']),
                 }
 
     def _initial_zone(self, trigger_type, configured):
@@ -384,24 +367,16 @@ class DesktopApplication:
         self.controls[key] = handle
         return handle
 
-    def _radio(self, key, text, checked, control_id, x, y, width, group=False, panel=None):
-        style = WS_TABSTOP | BS_AUTORADIOBUTTON
-        if group:
-            style |= WS_GROUP
-        handle = self._create('BUTTON', text, style, x, y, width, 28, control_id, panel=panel)
-        user32.SendMessageW(handle, BM_SETCHECK, BST_CHECKED if checked else 0, 0)
-        self.controls[key] = handle
-        return handle
-
     def _zone_id_from_combo(self, device_kind, channel, trigger_type):
         options = self.sps_zone_options[trigger_type]
         index = int(user32.SendMessageW(
-            self.controls[f'zone_{device_kind}_{channel.lower()}'], CB_GETCURSEL, 0, 0,
+            self.controls[f'zone_{device_kind}_{channel.lower()}_{trigger_type}'],
+            CB_GETCURSEL, 0, 0,
         ))
         return options[index].zone_id if 0 <= index < len(options) else ''
 
     def _populate_zone_combo(self, device_kind, channel, trigger_type):
-        control_key = f'zone_{device_kind}_{channel.lower()}'
+        control_key = f'zone_{device_kind}_{channel.lower()}_{trigger_type}'
         handle = self.controls[control_key]
         user32.SendMessageW(handle, CB_RESETCONTENT, 0, 0)
         options = self.sps_zone_options[trigger_type]
@@ -412,22 +387,6 @@ class DesktopApplication:
         selected = self.channel_zone_selections[(device_kind, channel)].get(trigger_type, '')
         index = next((i for i, option in enumerate(options) if option.zone_id == selected), 0)
         user32.SendMessageW(handle, CB_SETCURSEL, index if options else -1, 0)
-
-    def _set_channel_trigger_type(self, device_kind, channel, trigger_type):
-        key = (device_kind, channel)
-        previous = self.channel_trigger_types[key]
-        if f'zone_{device_kind}_{channel.lower()}' in self.controls:
-            previous_zone = self._zone_id_from_combo(device_kind, channel, previous)
-            if previous_zone:
-                self.channel_zone_selections[key][previous] = previous_zone
-        self.channel_trigger_types[key] = trigger_type
-        self._set_checked(
-            f'trigger_{device_kind}_{channel.lower()}_socket', trigger_type == SPS_SOCKET,
-        )
-        self._set_checked(
-            f'trigger_{device_kind}_{channel.lower()}_plug', trigger_type == SPS_PLUG,
-        )
-        self._populate_zone_combo(device_kind, channel, trigger_type)
 
     def _combo_value(self, key, values):
         index = int(user32.SendMessageW(self.controls[key], CB_GETCURSEL, 0, 0))
@@ -440,15 +399,17 @@ class DesktopApplication:
         for device_kind in ('coyote', 'opossum'):
             for channel in ('A', 'B'):
                 key = (device_kind, channel)
-                trigger_type = self.channel_trigger_types[key]
-                if f'zone_{device_kind}_{channel.lower()}' in self.controls:
+                for trigger_type in (SPS_SOCKET, SPS_PLUG):
+                    control_key = f'zone_{device_kind}_{channel.lower()}_{trigger_type}'
+                    if control_key not in self.controls:
+                        continue
                     selected = self._zone_id_from_combo(device_kind, channel, trigger_type)
                     if selected:
                         self.channel_zone_selections[key][trigger_type] = selected
 
         sources = {
-            SPS_SOCKET: ('sockets', '任何当前正在触发的 Socket'),
-            SPS_PLUG: ('plugs', '任何当前正在触发的 Plug'),
+            SPS_SOCKET: ('sockets', '任何正在触发的 Socket'),
+            SPS_PLUG: ('plugs', '任何正在触发的 Plug'),
         }
         for trigger_type, (key, any_label) in sources.items():
             options = [SPSZone(trigger_type, '*', any_label)]
@@ -468,11 +429,8 @@ class DesktopApplication:
 
         for device_kind in ('coyote', 'opossum'):
             for channel in ('A', 'B'):
-                self._populate_zone_combo(
-                    device_kind,
-                    channel,
-                    self.channel_trigger_types[(device_kind, channel)],
-                )
+                for trigger_type in (SPS_SOCKET, SPS_PLUG):
+                    self._populate_zone_combo(device_kind, channel, trigger_type)
 
         avatar_name = event.get('avatar_name') or event.get('avatar_id') or '未知'
         source = event.get('source') or 'OSC'
@@ -500,7 +458,7 @@ class DesktopApplication:
         self.controls['service_status'] = self._label('正在启动…', 125, 22, 180, 28)
         self._button('启动服务', ID_START, 330, 14, 100, 36)
         self._button('停止服务', ID_STOP, 442, 14, 100, 36)
-        self._button('保存并重启服务', ID_SAVE_RESTART, 554, 14, 150, 36)
+        self._button('保存并应用', ID_SAVE_RESTART, 554, 14, 150, 36)
 
         self._button('基本设置', ID_NAV_GENERAL, 20, 78, 110, 40)
         self._button('郊狼 A/B', ID_NAV_COYOTE, 20, 130, 110, 40)
@@ -566,75 +524,52 @@ class DesktopApplication:
     def _build_device_panel(self, device_kind):
         is_coyote = device_kind == 'coyote'
         panel = device_kind
-        title = '郊狼 A/B 通道设置' if is_coyote else '负鼠 A/B 通道设置'
-        explanation = (
-            '郊狼每个通道独立选择 SPS 触发、部位、波形和强度上限。'
-            if is_coyote else
-            '负鼠每个通道使用自己的 SPS 触发、部位、波形和强度上限。'
-        )
-        self._label(title, 150, 76, 575, 34, panel=panel)
-        self._label(explanation, 150, 112, 575, 34, panel=panel)
+        title = '郊狼通道' if is_coyote else '负鼠通道'
+        self._label(title, 150, 76, 575, 30, panel=panel)
         self.controls[f'avatar_status_{device_kind}'] = self._label(
-            '正在通过 VRChat OSCQuery 读取当前 Avatar…',
-            150, 142, 575, 32, panel=panel,
+            '正在读取 Avatar…', 150, 108, 575, 28, panel=panel,
         )
-        self._build_device_channel(device_kind, 'A', 150, 178, panel)
+        self._build_device_channel(device_kind, 'A', 150, 140, panel)
         self._build_device_channel(device_kind, 'B', 150, 392, panel)
-        self._label(
-            '修改后点击顶部“保存并重启服务”才会生效。',
-            168, 610, 540, 30, panel=panel,
-        )
 
 
     def _build_device_channel(self, device_kind, channel, x, y, panel):
         lower = channel.lower()
-        current = self.channel_trigger_types[(device_kind, channel)]
-        radio_ids = {
-            ('coyote', 'A'): (ID_TRIGGER_COYOTE_A_SOCKET, ID_TRIGGER_COYOTE_A_PLUG),
-            ('coyote', 'B'): (ID_TRIGGER_COYOTE_B_SOCKET, ID_TRIGGER_COYOTE_B_PLUG),
-            ('opossum', 'A'): (ID_TRIGGER_OPOSSUM_A_SOCKET, ID_TRIGGER_OPOSSUM_A_PLUG),
-            ('opossum', 'B'): (ID_TRIGGER_OPOSSUM_B_SOCKET, ID_TRIGGER_OPOSSUM_B_PLUG),
-        }
-        socket_id, plug_id = radio_ids[(device_kind, channel)]
-        self._create('BUTTON', f'{channel} 通道触发方式', BS_GROUPBOX, x, y, 575, 205, panel=panel)
-        self._radio(
-            f'trigger_{device_kind}_{lower}_socket',
-            '参考 SPS Socket 被插入深度',
-            current == SPS_SOCKET,
-            socket_id,
-            x + 18, y + 30, 250,
-            group=True,
-            panel=panel,
-        )
-        self._radio(
-            f'trigger_{device_kind}_{lower}_plug',
-            '参考 SPS Plug 插入深度',
-            current == SPS_PLUG,
-            plug_id,
-            x + 290, y + 30, 255,
-            panel=panel,
-        )
-        self._label('选择部位', x + 18, y + 70, 90, 28, panel=panel)
+        self._create('BUTTON', f'{channel} 通道', BS_GROUPBOX, x, y, 575, 240, panel=panel)
+        self._label('Socket', x + 18, y + 28, 60, 28, panel=panel)
         self._combo(
-            f'zone_{device_kind}_{lower}', [''], '', x + 112, y + 66, 425, panel=panel,
+            f'zone_{device_kind}_{lower}_{SPS_SOCKET}', [''], '',
+            x + 80, y + 24, 185, panel=panel,
         )
-        self._populate_zone_combo(device_kind, channel, current)
+        self._populate_zone_combo(device_kind, channel, SPS_SOCKET)
+        self._label('Plug', x + 282, y + 28, 50, 28, panel=panel)
+        self._combo(
+            f'zone_{device_kind}_{lower}_{SPS_PLUG}', [''], '',
+            x + 332, y + 24, 225, panel=panel,
+        )
+        self._populate_zone_combo(device_kind, channel, SPS_PLUG)
         config = self.settings['dglab3'][device_kind][f'channel_{lower}']
         selected_waveform = config['depth']['waveform']
-        self._label('波形', x + 18, y + 112, 90, 28, panel=panel)
+        waveforms = WAVEFORM_NAMES_BY_DEVICE[device_kind]
+        self._label('波形', x + 18, y + 70, 50, 28, panel=panel)
         self._combo(
-            f'waveform_{device_kind}_{lower}', WAVEFORM_NAMES, selected_waveform,
-            x + 112, y + 108, 205, panel=panel,
+            f'waveform_{device_kind}_{lower}', waveforms, selected_waveform,
+            x + 68, y + 66, 180, panel=panel,
         )
-        self._label('强度上限（0～200）', x + 330, y + 112, 145, 28, panel=panel)
+        self._label('上限', x + 265, y + 70, 45, 28, panel=panel)
         self._edit(
             f'{device_kind}_strength_{lower}',
             self.basic_settings['dglab3'][device_kind][f'channel_{lower}']['strength_limit'],
-            x + 478, y + 108, 60, 28, panel=panel,
+            x + 310, y + 66, 60, 28, panel=panel,
         )
-        self._label(
-            '深度 0～1 线性缩放本通道波形。',
-            x + 18, y + 157, 520, 28, panel=panel,
+        extra = self.basic_settings['dglab3'][device_kind][f'channel_{lower}']['extra_parameters']
+        self._check(
+            f'extra_enabled_{device_kind}_{lower}', '额外参数', extra['enabled'],
+            x + 392, y + 64, 150, panel=panel,
+        )
+        self._edit(
+            f'extra_paths_{device_kind}_{lower}', '\r\n'.join(extra['paths']),
+            x + 18, y + 108, 539, 112, multiline=True, panel=panel,
         )
 
     def _build_debug_panel(self):
@@ -647,10 +582,10 @@ class DesktopApplication:
         title = '郊狼' if device_kind == 'coyote' else '负鼠'
         self._create('BUTTON', f'{title} A/B 通道', BS_GROUPBOX, x, y, 575, 225, panel=panel)
         self._label('通道', x + 18, y + 28, 45, 24, panel=panel)
-        self._label('触发', x + 68, y + 28, 100, 24, panel=panel)
-        self._label('选择范围 / 当前部位', x + 173, y + 28, 205, 24, panel=panel)
+        self._label('来源', x + 68, y + 28, 100, 24, panel=panel)
+        self._label('当前部位 / 参数', x + 173, y + 28, 205, 24, panel=panel)
         self._label('深度', x + 383, y + 28, 65, 24, panel=panel)
-        self._label('强度', x + 453, y + 28, 90, 24, panel=panel)
+        self._label('发送强度', x + 438, y + 28, 105, 24, panel=panel)
         for index, channel in enumerate(('A', 'B')):
             row_y = y + 58 + index * 78
             prefix = f'debug_{device_kind}_{channel}'
@@ -658,7 +593,7 @@ class DesktopApplication:
             self.controls[f'{prefix}_mode'] = self._label('—', x + 68, row_y, 100, 28, panel=panel)
             self.controls[f'{prefix}_zone'] = self._label('—', x + 173, row_y, 205, 28, panel=panel)
             self.controls[f'{prefix}_depth'] = self._label('0.0%', x + 383, row_y, 65, 28, panel=panel)
-            self.controls[f'{prefix}_strength'] = self._label('未连接', x + 453, row_y, 90, 28, panel=panel)
+            self.controls[f'{prefix}_strength'] = self._label('未连接', x + 438, row_y, 105, 28, panel=panel)
             progress = self._create(
                 'msctls_progress32', '', 0, x + 68, row_y + 31, 475, 14, panel=panel,
             )
@@ -717,21 +652,29 @@ class DesktopApplication:
         for device_kind in ('coyote', 'opossum'):
             for channel in ('A', 'B'):
                 lower = channel.lower()
-                trigger_type = (
-                    SPS_SOCKET
-                    if self._is_checked(f'trigger_{device_kind}_{lower}_socket')
-                    else SPS_PLUG
-                )
-                zone = self._zone_id_from_combo(device_kind, channel, trigger_type)
                 basic_channel = basic['dglab3'][device_kind][f'channel_{lower}']
-                basic_channel['trigger_type'] = trigger_type
-                basic_channel['zone'] = zone
+                basic_channel['socket_zone'] = self._zone_id_from_combo(
+                    device_kind, channel, SPS_SOCKET,
+                )
+                basic_channel['plug_zone'] = self._zone_id_from_combo(
+                    device_kind, channel, SPS_PLUG,
+                )
+                paths = []
+                for item in self._get_text(f'extra_paths_{device_kind}_{lower}').splitlines():
+                    path = item.strip()
+                    if path and path not in paths:
+                        paths.append(path)
+                basic_channel['extra_parameters']['enabled'] = self._is_checked(
+                    f'extra_enabled_{device_kind}_{lower}',
+                )
+                basic_channel['extra_parameters']['paths'] = paths
                 basic_channel['strength_limit'] = int(
                     self._get_text(f'{device_kind}_strength_{lower}')
                 )
+                waveforms = WAVEFORM_NAMES_BY_DEVICE[device_kind]
                 settings['dglab3'][device_kind][f'channel_{lower}']['depth']['waveform'] = (
                     self._combo_value(
-                        f'waveform_{device_kind}_{lower}', WAVEFORM_NAMES,
+                        f'waveform_{device_kind}_{lower}', waveforms,
                     )
                 )
         validate_config(settings, basic)
@@ -772,13 +715,17 @@ class DesktopApplication:
                     self.controller.stop()
                 elif action == 'restart':
                     self.controller.restart(settings, basic)
-                elif action == 'save_restart':
+                elif action == 'save_apply':
                     desired = settings['general']['steamvr_auto_start']
                     previous = self.settings['general']['steamvr_auto_start']
                     if desired or desired != previous:
                         steamvr_result = self._apply_steamvr_autostart(desired)
-                    self.config_manager.save(settings, basic)
-                    self.controller.restart(settings, basic)
+                    self.controller.apply_settings(settings, basic)
+                    try:
+                        self.config_manager.save(settings, basic)
+                    except Exception:
+                        self.controller.apply_settings(self.settings, self.basic_settings)
+                        raise
                 elif action == 'exit':
                     self.controller.stop()
             except Exception as exc:
@@ -795,7 +742,7 @@ class DesktopApplication:
 
         threading.Thread(target=worker, daemon=True, name=f'ui-{action}').start()
 
-    def _save_and_restart(self):
+    def _save_and_apply(self):
         if self.action_running:
             self._message('当前操作尚未完成，请稍候再试。', error=True)
             return
@@ -805,7 +752,7 @@ class DesktopApplication:
             previous = self.settings['general']['steamvr_auto_start']
             if desired or desired != previous:
                 self._set_text('steamvr_status', 'SteamVR：正在应用设置…')
-            self._start_action('save_restart', settings, basic)
+            self._start_action('save_apply', settings, basic)
         except (ValueError, OSError) as exc:
             self._message(str(exc), error=True)
 
@@ -828,7 +775,7 @@ class DesktopApplication:
             elif event_type == 'action_done':
                 self.action_running = False
                 if event.get('error'):
-                    if event.get('action') == 'save_restart':
+                    if event.get('action') == 'save_apply':
                         self._set_checked(
                             'steamvr_auto_start',
                             self.settings['general']['steamvr_auto_start'],
@@ -836,7 +783,7 @@ class DesktopApplication:
                         current = '已启用' if self.settings['general']['steamvr_auto_start'] else '未启用'
                         self._set_text('steamvr_status', f'SteamVR：{current}（本次更改失败）')
                     self._message(f'操作失败：{event["error"]}', error=True)
-                elif event.get('action') == 'save_restart':
+                elif event.get('action') == 'save_apply':
                     self.settings = event['settings']
                     self.basic_settings = event['basic']
                     self._refresh_qr()
@@ -887,22 +834,20 @@ class DesktopApplication:
                 info = device_channels.get(device_kind, {}).get(channel, {})
                 percentage = float(info.get('strength_percentage', 0.0))
                 trigger_type = info.get('trigger_type')
-                mode = 'Socket' if trigger_type == SPS_SOCKET else 'Plug'
-                zone = info.get('zone', '')
-                scope = '任何部位' if zone == '*' else (zone or '—')
-                active_zone = info.get('active_zone') or '—'
+                mode = {
+                    SPS_SOCKET: 'Socket', SPS_PLUG: 'Plug', 'extra': '额外参数',
+                }.get(trigger_type, '—')
+                detail = info.get('active_zone') or info.get('parameter') or '—'
                 prefix = f'debug_{device_kind}_{channel}'
                 self._set_text(f'{prefix}_mode', mode)
-                self._set_text(f'{prefix}_zone', f'{scope} / {active_zone}')
+                self._set_text(f'{prefix}_zone', detail)
                 self._set_text(f'{prefix}_depth', f'{percentage * 100:.1f}%')
                 items = info.get('device_strengths', ())
                 if not items:
                     text = '未连接'
                 else:
-                    first = items[0]
-                    text = f'{first["actual_strength"]} / {first["upper_strength"]}'
-                    if len(items) > 1:
-                        text += f' ×{len(items)}'
+                    strengths = info.get('sent_strengths', (0, 0, 0, 0))
+                    text = '/'.join(str(int(value)) for value in strengths)
                 self._set_text(f'{prefix}_strength', text)
                 user32.SendMessageW(
                     self.controls[f'{prefix}_progress'], PBM_SETPOS,
@@ -1040,23 +985,7 @@ class DesktopApplication:
             elif command in (ID_STOP, ID_TRAY_STOP):
                 self._start_action('stop')
             elif command == ID_SAVE_RESTART:
-                self._save_and_restart()
-            elif command == ID_TRIGGER_COYOTE_A_SOCKET:
-                self._set_channel_trigger_type('coyote', 'A', SPS_SOCKET)
-            elif command == ID_TRIGGER_COYOTE_A_PLUG:
-                self._set_channel_trigger_type('coyote', 'A', SPS_PLUG)
-            elif command == ID_TRIGGER_COYOTE_B_SOCKET:
-                self._set_channel_trigger_type('coyote', 'B', SPS_SOCKET)
-            elif command == ID_TRIGGER_COYOTE_B_PLUG:
-                self._set_channel_trigger_type('coyote', 'B', SPS_PLUG)
-            elif command == ID_TRIGGER_OPOSSUM_A_SOCKET:
-                self._set_channel_trigger_type('opossum', 'A', SPS_SOCKET)
-            elif command == ID_TRIGGER_OPOSSUM_A_PLUG:
-                self._set_channel_trigger_type('opossum', 'A', SPS_PLUG)
-            elif command == ID_TRIGGER_OPOSSUM_B_SOCKET:
-                self._set_channel_trigger_type('opossum', 'B', SPS_SOCKET)
-            elif command == ID_TRIGGER_OPOSSUM_B_PLUG:
-                self._set_channel_trigger_type('opossum', 'B', SPS_PLUG)
+                self._save_and_apply()
             elif command in (ID_EXIT, ID_TRAY_EXIT):
                 self._request_exit()
             elif command == ID_TRAY_SHOW:

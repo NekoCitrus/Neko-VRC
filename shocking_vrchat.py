@@ -328,6 +328,7 @@ class DeviceRuntime:
         self.error = None
         self.thread = None
         self.handlers = []
+        self.dispatcher = None
         self.chatbox_manager = None
         self.relay_packets = 0
         self.oscquery = None
@@ -355,9 +356,9 @@ class DeviceRuntime:
                 )
                 handler.set_chatbox_manager(self.chatbox_manager)
                 self.handlers.append(handler)
-                for address, signal in handler.osc_bindings():
-                    dispatcher.map(address, handler.osc_handler, signal)
-                    logger.info('{} 通道 {} 监听 SPS：{}', device_kind, channel, address)
+                for address, binding in handler.osc_bindings():
+                    dispatcher.map(address, handler.osc_handler, binding)
+                    logger.debug('{} 通道 {} 监听：{}', device_kind, channel, address)
 
         dispatcher.map('/avatar/change', self._avatar_change_handler)
 
@@ -373,6 +374,41 @@ class DeviceRuntime:
             for param in tuya['avatar_params']:
                 dispatcher.map(param, handler.osc_handler)
         return dispatcher
+
+    async def _apply_settings(self, settings):
+        old_chatbox = self.chatbox_manager
+        for handler in self.handlers:
+            if not isinstance(handler, ShockHandler):
+                continue
+            for address, binding in handler.osc_bindings():
+                self.dispatcher.unmap(address, handler.osc_handler, binding)
+
+        self.settings = settings
+        self.chatbox_manager = AdvancedChatboxManager(settings)
+        for handler in self.handlers:
+            if not isinstance(handler, ShockHandler):
+                continue
+            channel_key = f'channel_{handler.channel.lower()}'
+            await handler.reconfigure(settings['dglab3'][handler.device_kind][channel_key])
+            handler.SETTINGS = settings
+            handler.set_chatbox_manager(self.chatbox_manager)
+            for address, binding in handler.osc_bindings():
+                self.dispatcher.map(address, handler.osc_handler, binding)
+
+        for connection in srv.get_ws_connections():
+            apply_connection_settings = getattr(connection, 'apply_settings', None)
+            if apply_connection_settings is not None:
+                await apply_connection_settings(settings)
+        if self.oscquery is not None:
+            self.oscquery.settings = settings
+        if old_chatbox is not None:
+            old_chatbox.cleanup(notify=False)
+
+    def apply_settings(self, settings, timeout=10):
+        if self.loop is None or not self.loop.is_running():
+            raise RuntimeError('后台服务未运行。')
+        future = asyncio.run_coroutine_threadsafe(self._apply_settings(settings), self.loop)
+        future.result(timeout=timeout)
 
     def _avatar_change_handler(self, _address, *args):
         if len(args) != 1 or not isinstance(args[0], str):
@@ -439,7 +475,7 @@ class DeviceRuntime:
         else:
             sockets = avatar.sockets if avatar else ()
             plugs = avatar.plugs if avatar else ()
-            source = '/avatar/change 兜底'
+            source = ''
         event = {
             'type': 'avatar',
             'avatar_id': avatar_id,
@@ -514,12 +550,12 @@ class DeviceRuntime:
         chatbox_task = None
         try:
             dispatcher = self._build_dispatcher()
+            self.dispatcher = dispatcher
             for handler in self.handlers:
                 start = getattr(handler, 'start_background_jobs', None)
                 if start:
                     start()
-            if self.chatbox_manager.enabled:
-                chatbox_task = asyncio.create_task(self._chatbox_task())
+            chatbox_task = asyncio.create_task(self._chatbox_task())
 
             osc_address = (self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
             self.oscquery = OSCQueryService(
@@ -561,6 +597,7 @@ class DeviceRuntime:
             if self.oscquery is not None:
                 self.oscquery.stop()
                 self.oscquery = None
+            self.dispatcher = None
             self._emit({'type': 'service', 'state': 'stopped'})
 
     def start(self, timeout=10):
@@ -707,6 +744,24 @@ class ServiceController:
     def restart(self, settings=None, basic_settings=None):
         self.stop()
         self.start(settings, basic_settings)
+
+    def apply_settings(self, settings, basic_settings):
+        """Apply editable settings without rebinding ports or dropping the App."""
+        global SETTINGS, SETTINGS_BASIC, SERVER_IP
+        with self._lock:
+            settings = copy.deepcopy(settings)
+            basic_settings = copy.deepcopy(basic_settings)
+            validate_config(settings, basic_settings)
+            runtime_settings = apply_basic_settings(settings, basic_settings)
+            if self.runtime is not None:
+                cold_sections = ('ws', 'osc', 'oscquery', 'relay', 'web_server')
+                for section in cold_sections:
+                    if settings.get(section) != SETTINGS.get(section):
+                        raise ValueError(f'{section} 监听设置需重启软件后生效。')
+                self.runtime.apply_settings(runtime_settings)
+            SETTINGS = settings
+            SETTINGS_BASIC = basic_settings
+            SERVER_IP = settings.get('SERVER_IP') or detect_current_ip(settings)
 
     def snapshot(self):
         if self.runtime is None:

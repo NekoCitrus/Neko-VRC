@@ -17,67 +17,68 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 
 1. Go to [Project Releases](https://github.com/NekoCitrus/Neko-VRC/releases) to download the latest Neko-VRC build.
 2. Run the exe. The lightweight desktop window opens and starts the background services automatically.
-3. Under **Coyote A/B** and **Opossum A/B**, configure Socket or Plug, the SPS zone, waveform, and strength limit independently for each device type and channel.
-4. Select **Save and restart service**. Allow the app through Windows Firewall if prompted.
+3. Under **Coyote A/B** and **Opossum A/B**, configure Socket, Plug, extra parameters, waveform, and strength limit for each channel.
+4. Select **Save and apply**. The existing APP connection stays connected.
 5. Connect the Coyote or Opossum to DG-LAB 4 APP over Bluetooth, open Socket control, and scan the QR code.
 6. If background operation is enabled, closing the window hides it to the real Windows notification area. Use the tray menu to reopen or exit.
 
 ## Desktop UI
 
 - **General:** Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
-- **Coyote A/B:** independent trigger type, zone scope, waveform, and strength limit for Coyote channels A and B. Each limit is capped by the slot's reported `intensityMax`.
-- **Opossum A/B:** independent trigger type, zone scope, waveform, and strength limit for Opossum channels A and B; these settings do not reuse Coyote values.
-- **Runtime Debug:** device connection, trigger type, selected scope, active zone, depth, and the four waveform-amplitude samples most recently sent to the App.
+- **Coyote A/B:** independent sources, official Coyote waveform, and strength limit for each channel.
+- **Opossum A/B:** independent sources, official Opossum waveform, and strength limit for each channel.
+- **Runtime Debug:** winning source, active zone or parameter, depth, and the four amplitude samples most recently sent to the App.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
 Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
 
 ### Start with SteamVR
 
-The **Start with SteamVR** checkbox uses an OpenVR application manifest to enable or disable SteamVR auto-start. Start SteamVR before changing this option and selecting **Save and restart service**. The manifest is stored under `%APPDATA%\ShockingVRChat\steamvr\`; each application start verifies it and repairs the path after the exe is moved.
+The **Start with SteamVR** checkbox uses an OpenVR application manifest to enable or disable SteamVR auto-start. Start SteamVR before changing this option and selecting **Save and apply**. The manifest is stored under `%APPDATA%\ShockingVRChat\steamvr\`.
 
 This feature does not use Windows login startup and does not launch or poll for SteamVR. SteamVR may require one restart when it first reads the new manifest; the UI reports this and completes setup on the next launch.
 
 ## Configuration location
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v0.8.yaml
+%APPDATA%\ShockingVRChat\settings-v0.9.yaml
 ```
 
-The log is stored as `neko-vrc.log` in the same directory. The legacy `%APPDATA%\ShockingVRChat` directory is retained for upgrade compatibility. The first v0.8 run migrates v0.7 and older files. Legacy shared SPS settings initialize separate Coyote and Opossum A/B settings.
+The log is stored as `neko-vrc.log` in the same directory. The legacy `%APPDATA%\ShockingVRChat` directory is retained for upgrade compatibility. v0.9 migrates older settings automatically.
 
 ## Device control
 
 Coyote and Opossum share one DG-LAB 4 APP Socket V4 connection, but the APP reports every host as an independent `slotId`. The application keeps each `COYOTE_020` / `COYOTE_030` and `OVC_1` slot separate, calculates its strength independently, and sends operations to the matching slot. Opossum waveforms are normalized to the OVC fixed prefix and four vibration-amplitude bytes. See the official [dglab-kit](https://github.com/dungeonlab-open/dglab-kit).
 
-## SPS trigger types
+## Strength calculation
 
-Each A/B channel uses exactly one trigger type:
+Each device channel calculates all three inputs:
 
 - **SPS Socket penetration:** estimates depth from the selected `OGB/Orf/<zone>` Root/Tip values using the OGB algorithm.
 - **SPS Plug penetration:** reads `PenSelf/PenOthers` from the selected `OGB/Pen/<zone>`.
+- **Extra parameters:** maps values through the legacy distance formula (default range `0..1`) and expires them after 0.5 seconds without an update.
 
-Both produce a `0..1` depth that linearly scales waveform amplitude for every connected host. Free-form parameters, distance/shock modes, and `trigger_range` have been removed.
+The maximum current value wins and linearly scales that device channel's waveform amplitude. There is no manual trigger-mode selector.
 
-Each trigger type can target one named zone or **any currently active** zone; the latter uses the maximum depth across active zones. The application actively discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar ID and SPS parameter tree. `/avatar/change` only requests an immediate refresh and acts as a fallback if the query fails; the local OSC JSON supplies friendly names when available.
+Socket and Plug can each target one named zone or **any currently active** zone. The application discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar and SPS parameter tree; `/avatar/change` only requests an immediate refresh.
 
 ## Configuration File Reference
 
-The configuration format is YAML, version `v0.8`. Coyote and Opossum A/B settings are independent under `channels.dglab3.coyote` and `channels.dglab3.opossum`.
+The configuration format is YAML, version `v0.9`. Coyote and Opossum A/B settings are independent under `channels.dglab3.coyote` and `channels.dglab3.opossum`.
 
 ```yaml
-version: v0.8
+version: v0.9
 channels:
-  version: v0.8
+  version: v0.9
   dglab3:
     coyote:
-      channel_a: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
-      channel_b: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
+      channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
+      channel_b: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
     opossum:
-      channel_a: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
-      channel_b: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
+      channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
+      channel_b: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
 settings:
-  version: v0.8
+  version: v0.9
   osc:
     listen_host: 127.0.0.1
     listen_port: 9001

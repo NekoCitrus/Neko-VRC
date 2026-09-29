@@ -14,24 +14,24 @@
 
 1. 前往 [本项目 Release](https://github.com/NekoCitrus/Neko-VRC/releases) 下载最新版本的 Neko-VRC
 2. 运行 exe。程序会直接打开轻量桌面窗口并自动启动后台服务。
-3. 在“郊狼 A/B”和“负鼠 A/B”中，分别为各自的 A/B 通道设置 Socket 或 Plug、部位、波形和强度上限。
-4. 点击“保存并重启服务”。首次联网时如弹出 Windows 防火墙提示，请选择允许。
+3. 在“郊狼 A/B”和“负鼠 A/B”中设置各通道的 Socket、Plug、额外参数、波形和强度上限。
+4. 点击“保存并应用”。已有 APP 连接不会断开。首次联网时如弹出 Windows 防火墙提示，请选择允许。
 5. 启动最新版 DG-LAB 4 APP，在 APP 内用蓝牙连接郊狼或负鼠，再用 Socket 控制扫描程序二维码。
 6. 如勾选“关闭主窗口后继续在系统托盘运行”，关闭窗口不会停止服务；可从托盘菜单重新打开或退出。
 
 ## 桌面窗口
 
 - **基本设置**：编辑 Chatbox、后台运行与 SteamVR 跟随启动开关。设备由 DG-LAB 4 APP 通过 Socket V4 上报，程序通过 OSCQuery 供 VRChat 自动发现。
-- **郊狼 A/B**：郊狼 A/B 各自设置 SPS 触发、部位、波形和强度上限；上限与 `intensityMax` 取较小值。
-- **负鼠 A/B**：负鼠 A/B 也有完全独立的触发、部位、波形和强度上限。
-- **运行调试**：显示设备连接、触发方式、选择范围、当前触发部位、深度，以及程序最近一次发送给 APP 的四个波形强度采样值。
+- **郊狼 A/B**：分别设置 Socket、Plug、额外参数、郊狼官方波形和强度上限。
+- **负鼠 A/B**：使用独立设置和负鼠官方波形。
+- **运行调试**：显示胜出来源、部位或参数、深度，以及最近发送给 APP 的四个波形强度采样值。
 - **版权信息**：显示项目、代码来源、前端贡献者与开源许可。
 
 程序当前接受一个 DG-LAB APP 连接，但会同时控制该 APP 上报的所有受支持郊狼与负鼠槽位。
 
 ### 跟随 SteamVR 启动
 
-“基本设置”中的“跟随 SteamVR 启动”复选框通过 OpenVR 应用清单启用或关闭 SteamVR 自动启动。更改该选项时请先启动 SteamVR，再点击“保存并重启服务”。清单保存在 `%APPDATA%\ShockingVRChat\steamvr\`；程序启动时会重新校验并修复 exe 移动后的路径。
+“基本设置”中的“跟随 SteamVR 启动”复选框通过 OpenVR 应用清单启用或关闭 SteamVR 自动启动。更改该选项时请先启动 SteamVR，再点击“保存并应用”。清单保存在 `%APPDATA%\ShockingVRChat\steamvr\`；程序启动时会重新校验并修复 exe 移动后的路径。
 
 该功能不会使用 Windows 开机启动项，也不会自行启动或轮询 SteamVR。SteamVR 首次读取新清单时可能要求重启 SteamVR；窗口会显示相应提示，并在下一次启动时继续完成设置。
 
@@ -40,10 +40,10 @@
 配置固定保存在：
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v0.8.yaml
+%APPDATA%\ShockingVRChat\settings-v0.9.yaml
 ```
 
-日志保存在同目录的 `neko-vrc.log`。为兼容旧版本，配置目录继续使用 `%APPDATA%\ShockingVRChat`。首次运行 v0.8 时会迁移 v0.7 及更旧配置；旧的共享 SPS 设置会复制为郊狼和负鼠各自的初始 A/B 设置。
+日志保存在同目录的 `neko-vrc.log`。为兼容旧版本，配置目录继续使用 `%APPDATA%\ShockingVRChat`。首次运行 v0.9 会迁移旧配置。
 
 ## 设备控制方式
 
@@ -51,35 +51,36 @@
 
 一般设置，以及郊狼/负鼠各自的 A/B 触发、部位、波形和强度上限，建议直接在窗口修改。WebSocket 或 Web 服务端口等高级选项仍可在 YAML 中修改；手动修改 YAML 后请从托盘退出程序并重新打开。
 
-## SPS 触发方式
+## 强度计算
 
-每个 A/B 通道只能使用以下一种方式：
+每个设备的每个通道会同时计算三路输入：
 
 - **SPS Socket 被插入深度**：读取 `OGB/Orf/<部位>` 的 Root/Tip 数据，按 OGB 算法估算插入深度。
 - **SPS Plug 插入深度**：读取 `OGB/Pen/<部位>` 的 `PenSelf/PenOthers` 深度。
+- **额外参数**：按旧 distance 算法将数值从默认 `0～1` 范围映射为深度；0.5 秒未更新即失效。
 
-每种方式都可选择一个指定部位，或选择“任何当前正在触发的”部位；后者会取所有当前触发部位中的最大深度。程序会主动发现 VRChat 的 OSCQuery 服务并查询 `/avatar`，从当前参数树读取 Avatar ID 与 SPS 部位；`/avatar/change` 仅用于要求立即刷新，查询失败时才作为兜底。对应 ID 的本地 OSC JSON 只用于补充友好名称。
+Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”部位。三路结果始终取最大值，无需选择触发模式。程序通过 OSCQuery 读取当前 Avatar 和 SPS 部位；`/avatar/change` 仅用于要求立即刷新。
 
-两种方式最终都得到 `0～1` 的深度，并线性缩放各已连接主机的波形幅值。旧的自定义参数列表、distance 模式、shock 模式和 `trigger_range` 已移除。
+最终深度为 `0～1`，线性缩放当前设备通道的波形幅值。
 
 
 ## 配置文件参考
 
-配置文件格式为 YAML，当前版本为 `v0.8`。郊狼和负鼠的 A/B 设置分别位于 `channels.dglab3.coyote` 和 `channels.dglab3.opossum`。
+配置文件格式为 YAML，当前版本为 `v0.9`。郊狼和负鼠的 A/B 设置分别位于 `channels.dglab3.coyote` 和 `channels.dglab3.opossum`。
 
 ```yaml
-version: v0.8
+version: v0.9
 channels:
-  version: v0.8
+  version: v0.9
   dglab3:
     coyote:
-      channel_a: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
-      channel_b: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
+      channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
+      channel_b: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
     opossum:
-      channel_a: {trigger_type: sps_plug, zone: '*', strength_limit: 100}
-      channel_b: {trigger_type: sps_socket, zone: '*', strength_limit: 100}
+      channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
+      channel_b: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
 settings:
-  version: v0.8
+  version: v0.9
   osc:
     listen_host: 127.0.0.1
     listen_port: 9001
@@ -100,7 +101,7 @@ settings:
 - Avatar 必须包含兼容的 SPS/OGB 参数。
 - Socket 参数路径应以 `/avatar/parameters/OGB/Orf/` 开头。
 - Plug 参数路径应以 `/avatar/parameters/OGB/Pen/` 开头。
-- 程序会从 VRChat OSCQuery 的 `/avatar` 参数树提取部位列表；下拉框中的 `*` 表示“任何当前正在触发的部位”，不再接受手工 OSC 路径。
+- 程序会从 VRChat OSCQuery 的 `/avatar` 参数树提取部位列表；下拉框中的 `*` 表示“任何当前正在触发的部位”。额外参数框仍接受 OSC 路径和通配符。
 - 如果下拉列表为空，请先在 VRChat 中切换到目标 Avatar，并确认 VRChat OSC 已启用且模型公开了兼容的 SPS/OGB 参数。
 
 ## 高级设置参考
@@ -181,12 +182,12 @@ PyInstaller 生成无控制台的单文件 `dist\Neko-VRC.exe`，配置不会写
 ### 应该如何设置上限
 
 - 建议通过郊狼 APP 内的被控设置进行调整，程序将跟随。
-- 请在“郊狼 A/B”或“负鼠 A/B”页面分别调整对应设备和通道的强度上限；如需超过默认值 100，修改后保存并重启服务。
+- 请在“郊狼 A/B”或“负鼠 A/B”页面调整对应通道的强度上限，然后保存并应用。
 - 为保证强度自动跟随自动运行，请确认郊狼APP内 菜单-被控设置 中，两个通道的强度上限初始值（最小值）大于等于 1。
 
 ### 想用同一个 SPS 部位同时触发两个通道
 
-- 在对应的“郊狼 A/B”或“负鼠 A/B”页面中，为 A、B 选择相同的触发方式和部位，然后保存并重启服务。
+- 在对应页面为 A、B 选择相同的 Socket/Plug 部位，然后保存并应用。
 
 ### OSC 端口冲突了怎么办
 

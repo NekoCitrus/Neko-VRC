@@ -59,6 +59,8 @@ class AdvancedChatboxManager:
         mode_names = {
             'sps_socket': 'Socket 深度',
             'sps_plug': 'Plug 深度',
+            'extra': '额外参数',
+            'none': '未触发',
             'unknown': '未知模式',
         }
         return mode_names.get(mode, mode)
@@ -181,13 +183,14 @@ class AdvancedChatboxManager:
         except Exception as exc:
             logger.warning(f'Chatbox自定义消息发送失败: {exc}')
 
-    def cleanup(self):
+    def cleanup(self, notify=True):
         """清理 Chatbox 状态。"""
         if not self.enabled or self.osc_client is None:
             return
         try:
-            self.send_custom_message('设备已断开')
-            if self.settings.get('set_avatar_parameter', True):
+            if notify:
+                self.send_custom_message('设备已断开')
+            if notify and self.settings.get('set_avatar_parameter', True):
                 self.osc_client.send_message('/avatar/parameters/ChatboxEnable', 0.0)
             logger.info('Chatbox功能已清理')
         except Exception as exc:

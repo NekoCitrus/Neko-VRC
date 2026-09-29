@@ -264,7 +264,12 @@ class DGV4Connection:
         return False
 
     async def _sync_strength_limits(self):
-        for slot_id in tuple(self.device_states):
+        for slot_id, state in tuple(self.device_states.items()):
+            # Opossum intensity is controlled by the trigger lifecycle in
+            # send_wave()/clear_wave(). Synchronizing it on every device or
+            # slot patch would start an idle vibrator or cancel an active one.
+            if state['device_kind'] != 'coyote':
+                continue
             for channel in ('A', 'B'):
                 await self.set_strength(
                     channel,
@@ -369,6 +374,26 @@ class DGV4Connection:
                 slot_id=slot_id,
             )
 
+    async def apply_settings(self, settings):
+        """Update per-device caps while preserving the Socket connection."""
+        self.SETTINGS = settings
+        self.strength_limits = {
+            device_kind: {
+                'A': settings['dglab3'][device_kind]['channel_a']['strength_limit'],
+                'B': settings['dglab3'][device_kind]['channel_b']['strength_limit'],
+            }
+            for device_kind in ('coyote', 'opossum')
+        }
+        self.strength_limit = self.strength_limits['coyote']
+        for slot_id, state in tuple(self.device_states.items()):
+            for channel in ('A', 'B'):
+                if state['strength'][channel] != 0:
+                    await self.set_strength(
+                        channel,
+                        value=self.get_upper_strength(channel, slot_id=slot_id),
+                        slot_id=slot_id,
+                    )
+
     async def send_wave(self, channel='A', wavestr='[]', device_kind=None):
         channel = self._validate_channel(channel)
         try:
@@ -380,6 +405,13 @@ class DGV4Connection:
         for state in tuple(self.device_states.values()):
             if device_kind is not None and state['device_kind'] != device_kind:
                 continue
+            if state['device_kind'] == 'opossum':
+                await self.set_strength(
+                    channel,
+                    mode='2',
+                    value=self.get_upper_strength(channel, slot_id=state['slot_id']),
+                    slot_id=state['slot_id'],
+                )
             device_frames = [
                 normalize_socket_frame(frame, state['device_type'])
                 for frame in frames
@@ -404,3 +436,10 @@ class DGV4Connection:
                 'device.op.clear',
                 {'s': slot_id, 'c': 0 if channel == 'A' else 1},
             )
+            if state['device_kind'] == 'opossum':
+                await self.set_strength(
+                    channel,
+                    mode='2',
+                    value=0,
+                    slot_id=slot_id,
+                )
