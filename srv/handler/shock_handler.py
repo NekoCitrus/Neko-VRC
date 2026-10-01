@@ -13,6 +13,7 @@ from ..waveform import frame_amplitudes, load_waveform_frames, scale_coyote_fram
 
 
 SOURCE_EXTRA = 'extra'
+SOURCE_MAP = 'map'
 EXTRA_PARAMETER_TIMEOUT = 0.5
 
 
@@ -35,6 +36,7 @@ class ShockHandler(BaseHandler):
         self.calculators = {}
         self.calculator_inputs = {}
         self.extra_values = {}
+        self.map_event_until = 0.0
         self.current_mode = 'none'
         self.active_source = ''
         self.active_zone = ''
@@ -136,6 +138,8 @@ class ShockHandler(BaseHandler):
             return None
         raw_value = float(value)
         if source == SOURCE_EXTRA:
+            if not self.extra_config['enabled']:
+                return None
             bottom = float(self.extra_config['bottom'])
             top = float(self.extra_config['top'])
             depth = min(max((raw_value - bottom) / (top - bottom), 0.0), 1.0)
@@ -161,6 +165,8 @@ class ShockHandler(BaseHandler):
     def _winner(self, now=None):
         now = time.monotonic() if now is None else now
         candidates = []
+        if self.extra_config['enabled'] and self.map_event_until > now:
+            candidates.append((1.0, SOURCE_MAP, '', '地图事件', 1.0))
         for (trigger_type, zone), calculator in self.calculators.items():
             address, raw_value = self.calculator_inputs.get(
                 (trigger_type, zone), ('', 0.0),
@@ -172,6 +178,16 @@ class ShockHandler(BaseHandler):
             if expiry > now
         )
         return max(candidates, key=lambda item: item[0]) if candidates else (0.0, '', '', '', 0.0)
+
+    async def trigger_map_event(self, seconds):
+        """Use the channel's shared extra/map switch and normal output feeder."""
+        if not self.extra_config['enabled']:
+            return False
+        self.map_event_until = max(self.map_event_until, time.monotonic() + seconds)
+        winner = self._winner()
+        self._set_winner(winner)
+        await self.handler_depth(winner[0])
+        return True
 
     def _set_winner(self, winner):
         depth, source, zone, parameter, raw_value = winner
@@ -189,6 +205,7 @@ class ShockHandler(BaseHandler):
         self.calculators.clear()
         self.calculator_inputs.clear()
         self.extra_values.clear()
+        self.map_event_until = 0.0
         self._load_settings(channel_settings)
         self._set_winner((0.0, '', '', '', 0.0))
         await self._clear_output()
@@ -197,6 +214,7 @@ class ShockHandler(BaseHandler):
         self.calculators.clear()
         self.calculator_inputs.clear()
         self.extra_values.clear()
+        self.map_event_until = 0.0
         self._set_winner((0.0, '', '', '', 0.0))
         self._track_task(self.handler_depth(0.0))
 
@@ -236,7 +254,10 @@ class ShockHandler(BaseHandler):
                 address for address, (_depth, expiry, _raw) in self.extra_values.items()
                 if expiry <= now
             ]
-            if expired:
+            map_expired = bool(self.map_event_until and self.map_event_until <= now)
+            if map_expired:
+                self.map_event_until = 0.0
+            if expired or map_expired:
                 for address in expired:
                     self.extra_values.pop(address, None)
                 winner = self._winner(now)
@@ -287,6 +308,9 @@ class ShockHandler(BaseHandler):
         while True:
             await asyncio.sleep(self.depth_update_time_window)
             current_strength = self.depth_current_strength
+            if current_strength == 0 and self.is_cleared:
+                last_strength = 0.0
+                continue
             if current_strength == last_strength == 0:
                 continue
             source_frame = self.wave_frames[self.wave_frame_index]

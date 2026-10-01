@@ -3,7 +3,6 @@ import copy
 import hmac
 import ipaddress
 import json
-import math
 import socket
 import sys
 import traceback
@@ -156,7 +155,7 @@ def web_qr():
 @app.after_request
 def after_request_hook(response):
     if request.args.get('ret') == 'status' and response.status_code == 200:
-        response = jsonify(build_status_response())
+        response = jsonify(build_legacy_status_response())
     return response
 
 
@@ -177,26 +176,63 @@ def handle_exception(error):
     return {'error': 'Internal server error.'}, 500
 
 
+def _is_vrchat_client():
+    user_agent = request.headers.get('User-Agent', '')
+    return (
+        'UnityPlayer' in user_agent
+        and 'NSPlayer' not in user_agent
+        and 'WMFSDK' not in user_agent
+    )
+
+
+def _is_local_network_client():
+    try:
+        address = ipaddress.ip_address(request.remote_addr or '')
+    except ValueError:
+        return False
+    mapped_address = getattr(address, 'ipv4_mapped', None)
+    if mapped_address is not None:
+        address = mapped_address
+    return address.is_loopback or address.is_link_local or address.is_private
+
+
+def _has_control_access():
+    api_settings = SETTINGS.get('api', {})
+    if not api_settings.get('control_enabled', False):
+        return False
+    expected_token = str(api_settings.get('token') or '')
+    supplied_token = request.headers.get('X-Control-Token') or request.args.get('token') or ''
+    return bool(
+        expected_token
+        and hmac.compare_digest(expected_token, supplied_token)
+        and _is_vrchat_client()
+    )
+
+
 def require_control_access(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
-        api_settings = SETTINGS.get('api', {})
-        if not api_settings.get('control_enabled', False):
-            raise ClientNotAllowed
-        expected_token = str(api_settings.get('token') or '')
-        supplied_token = request.headers.get('X-Control-Token') or request.args.get('token') or ''
-        if not expected_token or not hmac.compare_digest(expected_token, supplied_token):
-            raise ClientNotAllowed
-        user_agent = request.headers.get('User-Agent', '')
-        if 'UnityPlayer' not in user_agent or 'NSPlayer' in user_agent or 'WMFSDK' in user_agent:
+        if not _has_control_access():
             raise ClientNotAllowed
         return func(*args, **kwargs)
     return wrapper
 
 
+def allow_vrchat_map_trigger(func):
+    """Restore the original local VRChat map-trigger contract safely."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if _is_vrchat_client() and _is_local_network_client():
+            return func(*args, **kwargs)
+        if _has_control_access():
+            return func(*args, **kwargs)
+        raise ClientNotAllowed
+    return wrapper
+
+
 @app.route('/api/v1/status')
 def api_v1_status():
-    return build_status_response()
+    return build_legacy_status_response()
 
 
 def build_status_response():
@@ -217,6 +253,7 @@ def build_status_response():
                 }.get(state['device_type'], 'coyotev3'),
                 'attr': {
                     'strength': dict(state['strength']),
+                    'upper_strength': dict(state.get('upper_strength', state['strength'])),
                     'uuid': connection.uuid,
                     'slot_id': state['slot_id'],
                 },
@@ -226,6 +263,24 @@ def build_status_response():
         'service': ACTIVE_CONTROLLER.state if ACTIVE_CONTROLLER else 'stopped',
         'devices': device_entries,
     }
+
+
+def build_legacy_status_response():
+    """Expose effective caps, with Coyote first for original map integrations."""
+    status = build_status_response()
+    devices = []
+    ordered_devices = sorted(
+        status['devices'],
+        key=lambda device: not str(device.get('device', '')).startswith('coyote'),
+    )
+    for device in ordered_devices:
+        attr = dict(device['attr'])
+        actual_strength = dict(attr.get('strength', {}))
+        upper_strength = dict(attr.get('upper_strength', actual_strength))
+        attr['actual_strength'] = actual_strength
+        attr['strength'] = upper_strength
+        devices.append({**device, 'attr': attr})
+    return {**status, 'devices': devices}
 
 
 def connection_device_states(connection):
@@ -282,11 +337,13 @@ def normalize_wave_request(channel, repeat, wavedata):
 async def broadcast_repeated_wave(channels, repeat, wavedata):
     wavestr = json.dumps([wavedata] * repeat, separators=(',', ':'))
     for channel in channels:
-        await DGConnection.broadcast_wave(channel=channel, wavestr=wavestr)
+        await DGConnection.broadcast_wave(
+            channel=channel, wavestr=wavestr, device_kind='coyote',
+        )
 
 
 @app.route('/api/v1/shock/<channel>/<second>', methods=['GET', 'POST'])
-@require_control_access
+@allow_vrchat_map_trigger
 def api_v1_shock(channel, second):
     channel = str(channel).upper()
     if channel == 'ALL':
@@ -301,7 +358,7 @@ def api_v1_shock(channel, second):
         return {'error': 'second must be a number'}, 400
     if not 0.1 <= second <= 10.0:
         return {'error': 'second must be between 0.1 and 10'}, 400
-    submit_to_async_loop(broadcast_repeated_wave(channels, math.ceil(second / 0.1), '0A0A0A0A64646464'))
+    submit_to_async_loop(trigger_map_event(channels, second))
     return {'result': 'OK'}
 
 
@@ -314,6 +371,16 @@ def api_v1_sendwave(channel, repeat, wavedata):
         return {'error': str(exc)}, 400
     submit_to_async_loop(broadcast_repeated_wave([channel], repeat, wavedata))
     return {'result': 'OK'}
+
+
+async def trigger_map_event(channels, seconds):
+    controller = ACTIVE_CONTROLLER
+    runtime = controller.runtime if controller else None
+    if runtime is None:
+        raise RuntimeError('Device service is not running.')
+    for handler in runtime.handlers:
+        if isinstance(handler, ShockHandler) and handler.channel in channels:
+            await handler.trigger_map_event(seconds)
 
 
 class DeviceRuntime:

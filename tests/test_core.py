@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 from unittest.mock import patch
 
@@ -192,6 +193,66 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    async def test_shared_switch_blocks_extra_and_map_but_keeps_sps(self):
+        settings = make_settings()
+        settings['dglab3']['opossum']['channel_a']['extra_parameters']['enabled'] = False
+        handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='opossum')
+        self.assertFalse(await handler.trigger_map_event(1))
+        handler.osc_handler('/avatar/parameters/Shock/TouchAreaA', ('extra', 'value'), 1)
+        await asyncio.sleep(0)
+        self.assertEqual(handler.current_strength_percentage, 0)
+        self.assertFalse(any(binding[1][0] == 'extra' for binding in handler.osc_bindings()))
+        handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenOthers', (SPS_PLUG, 'PenOthers'), 0.4)
+        await asyncio.sleep(0)
+        self.assertEqual(handler.current_strength_percentage, 0.4)
+
+    async def test_map_event_survives_extra_expiry_then_resumes_sps(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenOthers', (SPS_PLUG, 'PenOthers'), 0.4)
+        handler.osc_handler('/avatar/parameters/Shock/TouchAreaA', ('extra', 'value'), 0.8)
+        await asyncio.sleep(0)
+        await handler.trigger_map_event(0.8)
+        task = asyncio.create_task(handler.clear_check())
+        try:
+            await asyncio.sleep(0.6)
+            self.assertEqual(handler.current_strength_percentage, 1)
+            self.assertEqual(handler.active_source, 'map')
+            await asyncio.sleep(0.3)
+            self.assertEqual(handler.current_strength_percentage, 0.4)
+            self.assertEqual(handler.active_source, SPS_PLUG)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_expired_map_event_clears_opossum_without_restarting_it(self):
+        connection = FakeDGConnection()
+        handler = ShockHandler(make_settings(), connection, 'A', device_kind='opossum')
+        handler.start_background_jobs()
+        try:
+            self.assertTrue(await handler.trigger_map_event(0.25))
+            await asyncio.sleep(0.4)
+            self.assertTrue(connection.waves)
+            self.assertIn(('opossum', 'A'), connection.cleared)
+            self.assertFalse(handler.is_active)
+            wave_count = len(connection.waves)
+            await asyncio.sleep(0.2)
+            self.assertEqual(len(connection.waves), wave_count)
+            self.assertEqual(handler.last_sent_strengths, (0, 0, 0, 0))
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_hot_disabling_shared_switch_cancels_active_map_event(self):
+        connection = FakeDGConnection()
+        handler = ShockHandler(make_settings(), connection, 'A', device_kind='opossum')
+        await handler.trigger_map_event(5)
+        config = copy.deepcopy(handler.shock_settings)
+        config['extra_parameters']['enabled'] = False
+        await handler.reconfigure(config)
+        self.assertFalse(handler.is_active)
+        self.assertEqual(handler.map_event_until, 0)
+        self.assertEqual(connection.cleared, [('opossum', 'A')])
+        self.assertFalse(await handler.trigger_map_event(1))
+
 
 class SPSDepthTests(unittest.TestCase):
     def test_avatar_json_exposes_socket_and_plug_dropdown_options(self):
@@ -303,13 +364,79 @@ class ConfigAndApiTests(unittest.TestCase):
         response = shocking_vrchat.app.test_client().get('/sendwav')
         self.assertEqual(response.status_code, 404)
 
-    def test_control_api_is_disabled_by_default(self):
+    def test_local_vrchat_map_trigger_is_allowed_without_control_token(self):
+        shocking_vrchat.SETTINGS['api']['control_enabled'] = False
+        with patch(
+            'shocking_vrchat.submit_to_async_loop',
+            side_effect=lambda coroutine: coroutine.close(),
+        ) as submit:
+            response = shocking_vrchat.app.test_client().get(
+                '/api/v1/shock/A/1',
+                headers={'User-Agent': 'UnityPlayer/test'},
+            )
+        self.assertEqual(response.status_code, 200)
+        submit.assert_called_once()
+
+    def test_non_vrchat_map_trigger_is_rejected_without_control_token(self):
+        shocking_vrchat.SETTINGS['api']['control_enabled'] = False
+        response = shocking_vrchat.app.test_client().get('/api/v1/shock/A/1')
+        self.assertEqual(response.status_code, 401)
+
+    def test_public_vrchat_map_trigger_is_rejected_without_control_token(self):
         shocking_vrchat.SETTINGS['api']['control_enabled'] = False
         response = shocking_vrchat.app.test_client().get(
             '/api/v1/shock/A/1',
             headers={'User-Agent': 'UnityPlayer/test'},
+            environ_base={'REMOTE_ADDR': '8.8.8.8'},
         )
         self.assertEqual(response.status_code, 401)
+
+    def test_raw_wave_api_remains_disabled_by_default(self):
+        shocking_vrchat.SETTINGS['api']['control_enabled'] = False
+        response = shocking_vrchat.app.test_client().get(
+            '/api/v1/sendwave/A/1/0A0A0A0A64646464',
+            headers={'User-Agent': 'UnityPlayer/test'},
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_raw_wave_broadcast_remains_coyote_only(self):
+        calls = []
+
+        async def record_wave(**kwargs):
+            calls.append(kwargs)
+
+        with patch.object(shocking_vrchat.DGConnection, 'broadcast_wave', new=record_wave):
+            asyncio.run(shocking_vrchat.broadcast_repeated_wave(
+                ['A', 'B'], 2, '0A0A0A0A64646464',
+            ))
+        self.assertEqual([item['channel'] for item in calls], ['A', 'B'])
+        self.assertTrue(all(item['device_kind'] == 'coyote' for item in calls))
+        self.assertTrue(all(len(json.loads(item['wavestr'])) == 2 for item in calls))
+
+    def test_map_request_respects_each_device_channel_switch(self):
+        settings = shocking_vrchat.apply_basic_settings(
+            copy.deepcopy(shocking_vrchat.DEFAULT_SETTINGS),
+            copy.deepcopy(shocking_vrchat.DEFAULT_BASIC_SETTINGS),
+        )
+        handlers = [
+            ShockHandler(settings, FakeDGConnection(), channel, device_kind=kind)
+            for kind in ('coyote', 'opossum') for channel in ('A', 'B')
+        ]
+        controller = SimpleNamespace(runtime=SimpleNamespace(handlers=handlers))
+        for switches in ((True, True, True, True), (True, False, False, True), (False,) * 4):
+            for channels in (('A',), ('B',), ('A', 'B')):
+                with self.subTest(switches=switches, channels=channels):
+                    for handler, enabled in zip(handlers, switches):
+                        handler.extra_config['enabled'] = enabled
+                        handler.map_event_until = 0
+                        handler.depth_current_strength = 0
+                    with patch('shocking_vrchat.ACTIVE_CONTROLLER', controller):
+                        asyncio.run(shocking_vrchat.trigger_map_event(channels, 1))
+                    self.assertEqual(
+                        [handler.depth_current_strength for handler in handlers],
+                        [float(enabled and handler.channel in channels)
+                         for handler, enabled in zip(handlers, switches)],
+                    )
 
     def test_wave_request_validation(self):
         self.assertEqual(

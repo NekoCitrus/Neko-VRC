@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.request import Request, urlopen
 
 import yaml
 from pythonosc.udp_client import SimpleUDPClient
@@ -28,7 +29,10 @@ from srv.config_manager import (
     validate_config,
 )
 from srv.connector.coyotev4ws import DGV4Connection
-from srv.oscquery import OSCQueryAvatarSnapshot, OSCQueryService, parse_vrchat_avatar_node
+from srv.oscquery import (
+    OSCQueryAvatarSnapshot, OSCQueryService, VRChatOSCQueryClient,
+    ServiceStateChange, parse_vrchat_avatar_node,
+)
 from srv.udp_relay import create_udp_relay
 from srv.steamvr_autostart import (
     APPLICATION_KEY,
@@ -327,6 +331,18 @@ class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OSCQueryServiceTests(unittest.TestCase):
+    def test_mdns_callback_accepts_zeroconf_keyword_arguments(self):
+        client = VRChatOSCQueryClient(None, lambda snapshot: None)
+        for change, expected in ((ServiceStateChange.Added, {'VRChat'}),
+                                 (ServiceStateChange.Removed, set())):
+            client.refresh_event.clear()
+            client._service_changed(
+                zeroconf=None, service_type='_oscjson._tcp.local.',
+                name='VRChat', state_change=change,
+            )
+            self.assertEqual(client.service_names, expected)
+            self.assertTrue(client.refresh_event.is_set())
+
     def make_service(self):
         settings = apply_basic_settings(
             copy.deepcopy(DEFAULT_SETTINGS),
@@ -562,18 +578,55 @@ class ServiceControllerTests(unittest.TestCase):
                 'slot_id': 'coyote-slot',
                 'device_type': 'COYOTE_030',
                 'strength': {'A': 80, 'B': 60},
+                'upper_strength': {'A': 120, 'B': 110},
             }, {
                 'slot_id': 'opossum-slot',
                 'device_type': 'OVC_1',
                 'strength': {'A': 100, 'B': 80},
+                'upper_strength': {'A': 150, 'B': 140},
             }),
         )
         with patch('shocking_vrchat.srv.get_ws_connections', return_value=(connection,)):
             response = shocking_vrchat.build_status_response()
+            legacy_response = shocking_vrchat.build_legacy_status_response()
         self.assertEqual(
             [(item['device'], item['attr']['slot_id']) for item in response['devices']],
             [('coyotev3', 'coyote-slot'), ('opossum', 'opossum-slot')],
         )
+        self.assertEqual(len(legacy_response['devices']), 2)
+        self.assertEqual(legacy_response['devices'][0]['device'], 'coyotev3')
+        self.assertEqual(
+            legacy_response['devices'][0]['attr']['strength'],
+            {'A': 120, 'B': 110},
+        )
+        self.assertEqual(
+            legacy_response['devices'][0]['attr']['actual_strength'],
+            {'A': 80, 'B': 60},
+        )
+
+    def test_map_status_prioritizes_coyote_and_supports_opossum_only(self):
+        coyote = {
+            'device': 'coyotev3',
+            'attr': {'strength': {'A': 10, 'B': 20},
+                     'upper_strength': {'A': 70, 'B': 60}},
+        }
+        opossum = {
+            'device': 'opossum',
+            'attr': {'strength': {'A': 0, 'B': 0},
+                     'upper_strength': {'A': 120, 'B': 130}},
+        }
+        for devices, expected in (([opossum, coyote], ['coyotev3', 'opossum']),
+                                  ([opossum], ['opossum']), ([], [])):
+            with self.subTest(devices=expected), patch(
+                'shocking_vrchat.build_status_response',
+                return_value={'healthy': 'ok', 'devices': devices},
+            ):
+                response = shocking_vrchat.app.test_client().get('/api/v1/status').get_json()
+                self.assertEqual([device['device'] for device in response['devices']], expected)
+                if response['devices']:
+                    upper = coyote if len(devices) == 2 else opossum
+                    self.assertEqual(response['devices'][0]['attr']['strength'],
+                                     upper['attr']['upper_strength'])
 
     def test_service_can_start_and_stop_without_a_device(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
@@ -1127,6 +1180,104 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
         finally:
             if client is not None:
                 client._sock.close()
+            controller.stop()
+            self.assertEqual(srv.get_ws_connections(), ())
+
+    async def test_http_map_events_use_shared_switches_caps_and_hot_updates(self):
+        settings, basic = self.make_settings()
+        enabled = {('coyote', 'A'), ('opossum', 'B')}
+        for kind in ('coyote', 'opossum'):
+            for channel in ('A', 'B'):
+                config = basic['dglab3'][kind][f'channel_{channel.lower()}']
+                config['extra_parameters']['enabled'] = (kind, channel) in enabled
+                config['strength_limit'] = 80 if kind == 'coyote' else 130
+        controller = ServiceController()
+
+        def request_event(channel):
+            url = f'http://127.0.0.1:{settings["web_server"]["listen_port"]}/api/v1/shock/{channel}/0.3'
+            request = Request(url, headers={'User-Agent': 'UnityPlayer/test'})
+            with urlopen(request, timeout=2) as response:
+                return json.load(response)
+
+        async def collect_operations(websocket):
+            operations = []
+            deadline = asyncio.get_running_loop().time() + 0.7
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return operations
+                try:
+                    frame = json.loads(await asyncio.wait_for(websocket.recv(), remaining))
+                except asyncio.TimeoutError:
+                    return operations
+                data = frame.get('data') or {}
+                if data.get('m') in ('device.op', 'device.op.clear'):
+                    operations.append((data['m'], data['data']))
+
+        try:
+            controller.start(settings, basic)
+            uri = f'ws://127.0.0.1:{settings["ws"]["listen_port"]}/?tid={settings["ws"]["master_uuid"]}'
+            async with websocket_connect(uri) as websocket:
+                for _ in range(3):
+                    await asyncio.wait_for(websocket.recv(), 2)
+                await websocket.send(json.dumps({
+                    'type': 'message',
+                    'data': {
+                        't': 'ev', 'ev': 'devices.snapshot',
+                        'devices': [{
+                            'slotId': 'coyote-slot', 'type': 'COYOTE_030',
+                            'props': {'intensityA': 0, 'intensityB': 0},
+                            'slotState': {
+                                'hasDevice': True,
+                                'channelA': {'intensityMax': 70},
+                                'channelB': {'intensityMax': 90},
+                            },
+                        }, {
+                            'slotId': 'opossum-slot', 'type': 'OVC_1',
+                            'props': {'intensityA': 0, 'intensityB': 0},
+                            'slotState': {'hasDevice': True},
+                        }],
+                    },
+                }))
+                deadline = time.monotonic() + 2
+                while not controller.snapshot()['connected'] and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+                self.assertTrue(controller.snapshot()['connected'])
+                self.assertEqual(await asyncio.to_thread(request_event, 'all'), {'result': 'OK'})
+                operations = await collect_operations(websocket)
+                self.assertEqual(
+                    {(op['s'], op['c']) for method, op in operations
+                     if method == 'device.op' and op['t'] == 0},
+                    {('coyote-slot', 0), ('opossum-slot', 1)},
+                )
+                self.assertIn(
+                    ('device.op', {'s': 'opossum-slot', 't': 3, 'c': 1, 'p': 1, 'v': 130}),
+                    operations,
+                )
+                self.assertIn(
+                    ('device.op', {'s': 'opossum-slot', 't': 7, 'c': 1, 'p': 1, 'v': 0}),
+                    operations,
+                )
+                self.assertEqual(
+                    controller.snapshot()['device_channels']['coyote']['A']['upper_strength'], 70,
+                )
+                self.assertFalse(controller.snapshot()['device_channels']['opossum']['B']['is_active'])
+                for kind in ('coyote', 'opossum'):
+                    for channel in ('A', 'B'):
+                        config = basic['dglab3'][kind][f'channel_{channel.lower()}']
+                        config['extra_parameters']['enabled'] = (kind, channel) not in enabled
+                connection = srv.get_ws_connections()[0]
+                await asyncio.to_thread(controller.apply_settings, settings, basic)
+                self.assertIs(srv.get_ws_connections()[0], connection)
+                self.assertEqual(await asyncio.to_thread(request_event, 'A'), {'result': 'OK'})
+                operations = await collect_operations(websocket)
+                self.assertEqual(
+                    {(op['s'], op['c']) for method, op in operations
+                     if method == 'device.op' and op['t'] == 0},
+                    {('opossum-slot', 0)},
+                )
+                self.assertFalse(controller.snapshot()['device_channels']['opossum']['A']['is_active'])
+        finally:
             controller.stop()
             self.assertEqual(srv.get_ws_connections(), ())
 

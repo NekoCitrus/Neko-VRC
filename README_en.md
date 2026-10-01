@@ -148,7 +148,9 @@ api:
   token: an automatically generated random token
 ```
 
-HTTP APIs that actuate a device are disabled by default. Enable them only when required, and provide the token through `?token=...` or the `X-Control-Token` header. Keep the token private and do not expose the web server directly to the public Internet.
+The original map-integration endpoint `/api/v1/shock/<A|B|all>/<seconds>` accepts requests from VRChat `UnityPlayer` clients on the local machine or LAN and triggers Coyote and Opossum without enabling the general control API. Each device channel's "Parameters / Map Events" checkbox enables both extra OSC parameters and map events; saving applies it without reconnecting. Map events use that channel's waveform and effective strength limit, then resume the current Socket, Plug, or extra-parameter output when their duration ends. Raw-wave endpoints such as `/api/v1/sendwave/...` remain disabled by default; enable them only when required and provide the token through `?token=...` or the `X-Control-Token` header. Keep the token private and do not expose the web server to the public Internet.
+
+`/api/v1/status` retains the original map-compatible shape, lists Coyote devices before Opossum, and also reports a connected Opossum when no Coyote is present. `attr.strength.A/B` contains each device's effective upper limit jointly imposed by the application setting and the device maximum.
 
 ## Development and packaging
 

@@ -60,6 +60,7 @@ class AdvancedChatboxManager:
             'sps_socket': 'Socket 深度',
             'sps_plug': 'Plug 深度',
             'extra': '额外参数',
+            'map': '地图事件',
             'none': '未触发',
             'unknown': '未知模式',
         }

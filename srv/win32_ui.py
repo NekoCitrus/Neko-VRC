@@ -564,7 +564,7 @@ class DesktopApplication:
         )
         extra = self.basic_settings['dglab3'][device_kind][f'channel_{lower}']['extra_parameters']
         self._check(
-            f'extra_enabled_{device_kind}_{lower}', '额外参数', extra['enabled'],
+            f'extra_enabled_{device_kind}_{lower}', '参数 / 地图事件', extra['enabled'],
             x + 392, y + 64, 150, panel=panel,
         )
         self._edit(
@@ -836,6 +836,7 @@ class DesktopApplication:
                 trigger_type = info.get('trigger_type')
                 mode = {
                     SPS_SOCKET: 'Socket', SPS_PLUG: 'Plug', 'extra': '额外参数',
+                    'map': '地图事件',
                 }.get(trigger_type, '—')
                 detail = info.get('active_zone') or info.get('parameter') or '—'
                 prefix = f'debug_{device_kind}_{channel}'

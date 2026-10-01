@@ -92,7 +92,7 @@ class VRChatOSCQueryClient:
         self.thread.start()
         self.refresh_event.set()
 
-    def _service_changed(self, _zeroconf, _service_type, name, state_change):
+    def _service_changed(self, zeroconf, service_type, name, state_change):
         with self.lock:
             if state_change is ServiceStateChange.Removed:
                 self.service_names.discard(name)
