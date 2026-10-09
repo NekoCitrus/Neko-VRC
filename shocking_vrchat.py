@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import errno
 import hmac
 import ipaddress
 import json
@@ -400,6 +401,7 @@ class DeviceRuntime:
         self.relay_packets = 0
         self.oscquery = None
         self.current_avatar_id = ''
+        self.current_avatar_endpoint = ''
 
     def _emit(self, event):
         if self.event_callback is not None:
@@ -482,6 +484,11 @@ class DeviceRuntime:
             logger.warning('Ignored invalid /avatar/change OSC message: {}', args)
             return
         avatar_id = args[0].strip()
+        # A hidden/unknown ID can repeat across avatar changes. Clear the old
+        # inputs immediately rather than waiting for identity-based snapshots.
+        for handler in self.handlers:
+            if isinstance(handler, ShockHandler):
+                handler.reset_for_avatar_change()
         if self.oscquery is not None:
             self.oscquery.request_avatar_refresh(avatar_id)
         else:
@@ -506,11 +513,12 @@ class DeviceRuntime:
 
     def _apply_avatar_snapshot(self, snapshot):
         avatar_id = snapshot.avatar_id
-        if avatar_id != self.current_avatar_id:
+        if (avatar_id, snapshot.endpoint) != (self.current_avatar_id, self.current_avatar_endpoint):
             for handler in self.handlers:
                 if isinstance(handler, ShockHandler):
                     handler.reset_for_avatar_change()
             self.current_avatar_id = avatar_id
+            self.current_avatar_endpoint = snapshot.endpoint
         avatar = find_avatar_sps_config(avatar_id, APP_DIR)
         local_zones = {}
         if avatar is not None:
@@ -543,10 +551,19 @@ class DeviceRuntime:
             sockets = avatar.sockets if avatar else ()
             plugs = avatar.plugs if avatar else ()
             source = ''
+        if snapshot.endpoint:
+            parameter_paths = (snapshot.numeric_parameter_paths
+                               if snapshot.numeric_parameter_paths is not None
+                               else snapshot.parameter_paths)
+        else:
+            parameter_paths = getattr(avatar, 'numeric_parameter_paths', None)
+        for handler in self.handlers:
+            if isinstance(handler, ShockHandler):
+                handler.set_avatar_parameters(parameter_paths)
         event = {
             'type': 'avatar',
             'avatar_id': avatar_id,
-            'avatar_name': avatar.avatar_name if avatar else avatar_id,
+            'avatar_name': avatar.avatar_name if avatar else (avatar_id or '当前 Avatar'),
             'found': bool(snapshot.endpoint or avatar is not None),
             'source': source,
             'sockets': [
@@ -625,14 +642,24 @@ class DeviceRuntime:
             chatbox_task = asyncio.create_task(self._chatbox_task())
 
             osc_address = (self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
+            osc_server = AsyncIOOSCUDPServer(osc_address, dispatcher, self.loop)
+            try:
+                osc_transport, _ = await osc_server.create_serve_endpoint()
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE and getattr(exc, 'winerror', None) not in (10048, 10013):
+                    raise
+                # OSCQuery negotiates the actual port; don't compete with VRCFT
+                # or other OSC applications for the legacy fixed port.
+                osc_server = AsyncIOOSCUDPServer((osc_address[0], 0), dispatcher, self.loop)
+                osc_transport, _ = await osc_server.create_serve_endpoint()
+                logger.info('OSC 端口 {} 不可用，自动改用 {}。',
+                            osc_address[1], osc_transport.get_extra_info('sockname')[1])
             self.oscquery = OSCQueryService(
                 self.settings,
                 avatar_callback=self._oscquery_avatar_callback,
             )
+            self.oscquery.osc_port = osc_transport.get_extra_info('sockname')[1]
             self.oscquery.start()
-
-            osc_server = AsyncIOOSCUDPServer(osc_address, dispatcher, self.loop)
-            osc_transport, _ = await osc_server.create_serve_endpoint()
             async with wsserve(
                 self._websocket_handler,
                 self.settings['ws']['listen_host'],

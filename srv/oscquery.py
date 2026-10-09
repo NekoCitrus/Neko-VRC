@@ -1,5 +1,8 @@
+import errno
+import ipaddress
 import json
 import threading
+import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import ProxyHandler, build_opener
@@ -8,10 +11,12 @@ from urllib.parse import unquote
 from loguru import logger
 from zeroconf import ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
-from .sps_depth import sps_osc_bindings
+from .sps_depth import LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS, sps_osc_bindings
+from .config_manager import default_trigger_switches
 
 
 OSCQUERY_SERVICE_TYPE = '_oscjson._tcp.local.'
+OSC_SERVICE_TYPE = '_osc._udp.local.'
 
 
 @dataclass(frozen=True)
@@ -19,6 +24,7 @@ class OSCQueryAvatarSnapshot:
     avatar_id: str
     parameter_paths: tuple[str, ...]
     endpoint: str = ''
+    numeric_parameter_paths: tuple[str, ...] | None = None
 
 
 def _node_member(node, name, default=None):
@@ -30,22 +36,27 @@ def _node_member(node, name, default=None):
 def parse_vrchat_avatar_node(document, endpoint=''):
     """Extract the current avatar ID and parameter paths from VRChat's /avatar node."""
     contents = _node_member(document, 'CONTENTS', {})
-    if not isinstance(contents, dict) or 'parameters' not in contents:
+    if not isinstance(contents, dict) or not isinstance(contents.get('parameters'), dict):
         return None
     change = contents.get('change', {})
     value = _node_member(change, 'VALUE', ())
-    if not isinstance(value, (list, tuple)) or not value:
-        return None
-    avatar_id = str(value[0]).strip()
-    if not avatar_id.startswith('avtr_'):
-        return None
+    # Avatar identity is optional metadata, not a prerequisite for live OSC.
+    avatar_id = ''
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
+        candidate = value[0].strip()
+        if candidate.startswith('avtr_'):
+            avatar_id = candidate
 
     paths = set()
+    numeric_paths = set()
 
     def walk(node):
         full_path = _node_member(node, 'FULL_PATH')
-        if isinstance(full_path, str) and full_path.startswith('/avatar/parameters/'):
+        if (isinstance(full_path, str) and full_path.startswith('/avatar/parameters/')
+                and _node_member(node, 'TYPE')):
             paths.add(full_path)
+            if _node_member(node, 'TYPE') in ('f', 'i', 'T', 'F'):
+                numeric_paths.add(full_path)
         children = _node_member(node, 'CONTENTS', {})
         if isinstance(children, dict):
             for child in children.values():
@@ -56,6 +67,7 @@ def parse_vrchat_avatar_node(document, endpoint=''):
         avatar_id=avatar_id,
         parameter_paths=tuple(sorted(paths)),
         endpoint=endpoint,
+        numeric_parameter_paths=tuple(sorted(numeric_paths)),
     )
 
 
@@ -75,6 +87,7 @@ class VRChatOSCQueryClient:
         self.service_names = set()
         self.fallback_avatar_id = None
         self.last_fingerprint = None
+        self.force_publish = False
         self.opener = build_opener(ProxyHandler({}))
 
     def start(self):
@@ -101,9 +114,11 @@ class VRChatOSCQueryClient:
         self.refresh_event.set()
 
     def request_refresh(self, fallback_avatar_id=None):
-        if isinstance(fallback_avatar_id, str) and fallback_avatar_id.startswith('avtr_'):
+        if isinstance(fallback_avatar_id, str):
             with self.lock:
-                self.fallback_avatar_id = fallback_avatar_id
+                self.force_publish = True
+                if fallback_avatar_id.startswith('avtr_'):
+                    self.fallback_avatar_id = fallback_avatar_id
         self.refresh_event.set()
 
     def _fetch(self, address, port):
@@ -121,8 +136,12 @@ class VRChatOSCQueryClient:
 
     def _query_services(self):
         with self.lock:
-            names = tuple(self.service_names)
+            # Like VRCFT, resolve the game, not another receiver's parameter tree.
+            names = sorted(name for name in self.service_names
+                           if name.startswith('VRChat-Client'))
         for name in names:
+            if self.stop_event.is_set():
+                break
             try:
                 info = self.zeroconf.get_service_info(
                     OSCQUERY_SERVICE_TYPE,
@@ -135,16 +154,21 @@ class VRChatOSCQueryClient:
             if info is None:
                 continue
             for address in info.parsed_addresses():
+                if self.stop_event.is_set():
+                    return None
                 snapshot = self._fetch(address, info.port)
                 if snapshot is not None:
                     return snapshot
         return None
 
     def _publish(self, snapshot):
-        fingerprint = (snapshot.avatar_id, snapshot.parameter_paths)
-        if fingerprint == self.last_fingerprint:
-            return
-        self.last_fingerprint = fingerprint
+        fingerprint = (snapshot.endpoint, snapshot.avatar_id, snapshot.parameter_paths,
+                       snapshot.numeric_parameter_paths)
+        with self.lock:
+            if fingerprint == self.last_fingerprint and not self.force_publish:
+                return
+            self.force_publish = False
+            self.last_fingerprint = fingerprint
         try:
             self.callback(snapshot)
         except Exception:
@@ -194,6 +218,7 @@ class _OSCQueryHandler(BaseHTTPRequestHandler):
                 'OSC_IP': self.service.osc_host,
                 'OSC_PORT': self.service.osc_port,
                 'OSC_TRANSPORT': 'UDP',
+                'EXTENSIONS': {'ACCESS': True, 'TYPE': True},
             }
         elif path in ('', '/'):
             payload = self.service.root_node()
@@ -208,6 +233,9 @@ class _OSCQueryHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        if query == 'HOST_INFO':
+            # Refresh after VRChat negotiates our destination, as VRCFT does.
+            self.service.request_avatar_refresh()
 
 
 class OSCQueryService:
@@ -222,8 +250,10 @@ class OSCQueryService:
         self.http_thread = None
         self.zeroconf = None
         self.service_info = None
+        self.osc_service_info = None
         self.register_thread = None
         self.service_registered = False
+        self.osc_service_registered = False
         self.stopping = False
         self.avatar_callback = avatar_callback
         self.vrchat_client = None
@@ -233,10 +263,14 @@ class OSCQueryService:
         for device_kind in ('coyote', 'opossum'):
             for channel in ('channel_a', 'channel_b'):
                 config = self.settings['dglab3'][device_kind][channel]
-                for trigger_type, field in (
-                    ('sps_socket', 'socket_zone'),
-                    ('sps_plug', 'plug_zone'),
+                switches = default_trigger_switches(device_kind)
+                switches.update({field: config[field] for field in switches if field in config})
+                for trigger_type, field, needed in (
+                    ('sps_socket', 'socket_zone', switches['socket_enabled'] or switches['pcs_enabled']),
+                    ('sps_plug', 'plug_zone', switches['plug_enabled'] or switches['lms_enabled']),
                 ):
+                    if not needed:
+                        continue
                     paths.update(
                         address
                         for address, _signal in sps_osc_bindings(
@@ -244,11 +278,21 @@ class OSCQueryService:
                         )
                     )
                 if config['extra_parameters']['enabled']:
-                    paths.update(config['extra_parameters']['paths'])
+                    paths.update(path for path in config['extra_parameters']['paths']
+                                 if path not in (LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS))
+                if switches['pcs_enabled']:
+                    paths.add(PCS_PROXIMITY_ADDRESS)
+                if switches['lms_enabled']:
+                    paths.add(LMS_PROXIMITY_ADDRESS)
         return sorted(path for path in paths if path.startswith('/avatar/'))
 
     def root_node(self):
-        contents = {'avatar': {'FULL_PATH': '/avatar', 'CONTENTS': {}}}
+        contents = {'avatar': {
+            'FULL_PATH': '/avatar', 'ACCESS': 2,
+            'CONTENTS': {'change': {
+                'FULL_PATH': '/avatar/change', 'TYPE': 's', 'ACCESS': 2,
+            }},
+        }}
         for path in self._paths():
             node = contents['avatar']['CONTENTS']
             parts = path.strip('/').split('/')[1:]
@@ -289,28 +333,52 @@ class OSCQueryService:
     def start(self):
         self.stopping = False
         self.service_registered = False
+        self.osc_service_registered = False
         handler = type('OSCQueryRequestHandler', (_OSCQueryHandler,), {})
         handler.service = self
-        self.http = ThreadingHTTPServer((self.http_host, self.http_port), handler)
+        try:
+            self.http = ThreadingHTTPServer((self.http_host, self.http_port), handler)
+        except OSError as exc:
+            # Windows can report WSAEACCES for an exclusive/reserved port.
+            if exc.errno != errno.EADDRINUSE and getattr(exc, 'winerror', None) not in (10048, 10013):
+                raise
+            self.http = ThreadingHTTPServer((self.http_host, 0), handler)
+        self.http_port = self.http.server_address[1]
         self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.http_thread.start()
         address = self.http_host if self.http_host not in ('0.0.0.0', '::') else '127.0.0.1'
         self.zeroconf = Zeroconf()
+        # Both advertisements must identify the same receiver, on independent ports.
+        instance_name = f'{self.name}-{uuid.uuid4().hex[:8]}'
         self.service_info = ServiceInfo(
             OSCQUERY_SERVICE_TYPE,
-            f'{self.name}.{OSCQUERY_SERVICE_TYPE}',
-            addresses=[__import__('ipaddress').ip_address(address).packed],
+            f'{instance_name}.{OSCQUERY_SERVICE_TYPE}',
+            addresses=[ipaddress.ip_address(address).packed],
             port=self.http_port,
+            properties={b'txtvers': b'1'},
+        )
+        osc_address = self.osc_host if self.osc_host not in ('0.0.0.0', '::') else '127.0.0.1'
+        self.osc_host = osc_address
+        self.osc_service_info = ServiceInfo(
+            OSC_SERVICE_TYPE,
+            f'{instance_name}.{OSC_SERVICE_TYPE}',
+            addresses=[ipaddress.ip_address(osc_address).packed],
+            port=self.osc_port,
             properties={b'txtvers': b'1'},
         )
         zeroconf = self.zeroconf
         service_info = self.service_info
+        osc_service_info = self.osc_service_info
 
         def register():
             try:
                 zeroconf.register_service(service_info, allow_name_change=True)
                 if self.zeroconf is zeroconf:
                     self.service_registered = True
+                if not self.stopping:
+                    zeroconf.register_service(osc_service_info, allow_name_change=True)
+                    if self.zeroconf is zeroconf:
+                        self.osc_service_registered = True
             except Exception as exc:
                 if not self.stopping:
                     logger.warning(f'OSCQuery mDNS 广播失败：{exc!r}')
@@ -338,15 +406,22 @@ class OSCQueryService:
             self.vrchat_client.stop()
             self.vrchat_client = None
         if self.zeroconf is not None:
-            if self.service_info is not None and self.service_registered:
+            for info, registered in (
+                (self.service_info, self.service_registered),
+                (self.osc_service_info, self.osc_service_registered),
+            ):
+                if info is None or not registered:
+                    continue
                 try:
-                    self.zeroconf.unregister_service(self.service_info)
+                    self.zeroconf.unregister_service(info)
                 except Exception as exc:
                     logger.debug(f'OSCQuery mDNS 取消广播失败：{exc!r}')
             self.zeroconf.close()
             self.zeroconf = None
             self.service_info = None
+            self.osc_service_info = None
             self.service_registered = False
+            self.osc_service_registered = False
         if self.http is not None:
             self.http.shutdown()
             self.http.server_close()

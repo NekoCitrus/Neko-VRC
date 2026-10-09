@@ -61,6 +61,8 @@ class AdvancedChatboxManager:
             'sps_plug': 'Plug 深度',
             'extra': '额外参数',
             'map': '地图事件',
+            'lms': 'LMS distance',
+            'pcs': 'PCS distance',
             'none': '未触发',
             'unknown': '未知模式',
         }

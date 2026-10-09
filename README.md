@@ -14,7 +14,7 @@
 
 1. 前往 [本项目 Release](https://github.com/NekoCitrus/Neko-VRC/releases) 下载最新版本的 Neko-VRC
 2. 运行 exe。程序会直接打开轻量桌面窗口并自动启动后台服务。
-3. 在“郊狼 A/B”和“负鼠 A/B”中设置各通道的 Socket、Plug、额外参数、波形和强度上限。
+3. 在“郊狼 A/B”和“负鼠 A/B”中勾选各通道的触发来源，并设置部位、参数、波形和强度上限。
 4. 点击“保存并应用”。已有 APP 连接不会断开。首次联网时如弹出 Windows 防火墙提示，请选择允许。
 5. 启动最新版 DG-LAB 4 APP，在 APP 内用蓝牙连接郊狼或负鼠，再用 Socket 控制扫描程序二维码。
 6. 如勾选“关闭主窗口后继续在系统托盘运行”，关闭窗口不会停止服务；可从托盘菜单重新打开或退出。
@@ -53,15 +53,31 @@
 
 ## 强度计算
 
-每个设备的每个通道会同时计算三路输入：
+每个设备的每个通道有五个独立触发复选框；只从勾选的来源中取最大值：
 
 - **SPS Socket 被插入深度**：读取 `OGB/Orf/<部位>` 的 Root/Tip 数据，按 OGB 算法估算插入深度。
 - **SPS Plug 插入深度**：读取 `OGB/Pen/<部位>` 的 `PenSelf/PenOthers` 深度。
 - **额外参数**：按旧 distance 算法将数值从默认 `0～1` 范围映射为深度；0.5 秒未更新即失效。
+- **监听 PCS**：无有效 Socket 深度参数时，使用 `/avatar/parameters/pcs/contact/proximity` 按 distance 计算。
+- **监听 LMS**：所选 Plug 深度为 0 时，使用 `/avatar/parameters/lms/contact/proximity` 按 distance 计算。
 
-Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”部位。三路结果始终取最大值，无需选择触发模式。程序通过 OSCQuery 读取当前 Avatar 和 SPS 部位；`/avatar/change` 仅用于要求立即刷新。
+| 触发来源 | 郊狼 A/B 默认 | 负鼠 A/B 默认 |
+|---|---|---|
+| Socket、Plug、参数 / 地图事件 | 开 | 开 |
+| 监听 PCS | 开 | 关 |
+| 监听 LMS | 关 | 开 |
+
+Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”部位。程序通过 OSCQuery 读取当前 Avatar 和 SPS 部位；`/avatar/change` 仅用于要求立即刷新。
+
+自身 Socket 与自身 Plug 交互同样参与计算，`Self` 与 `Others` 取最大值，无需额外开关。请在 VRChat 中启用 `Avatar Self Interact`，并确保模型输出自身接触的 OGB 深度参数；只有吸附而没有深度信号时不会触发。参见 [OGB 设置说明](https://github.com/OscToys/osc.toys/blob/main/docs/20-getting-started.mdx)。
 
 最终深度为 `0～1`，线性缩放当前设备通道的波形幅值。
+
+勾选“监听 LMS”后，该通道所选 Plug 的 `PenSelf/PenOthers` 深度均为 0 时，LMS 按通道的 distance 上下限（默认 `0～1`）参与计算；任一 Plug 深度大于 0 时忽略 LMS。郊狼也可手动勾选 LMS。
+
+勾选“监听 PCS”后，仅在缺少匹配的有效 Socket 深度参数时才使用 PCS。有效参数指同部位、同来源的完整 Root/Tip 对，或旧版 `PenSelf/PenOthers`，类型需支持数值；深度为 0 不会启用 PCS。判定参考当前 OSCQuery 参数树和实际 Socket 信号，随模型、参数和部位变化更新。
+
+PCS 和 LMS 各自受对应复选框控制，不依赖“参数 / 地图事件”开关，0.5 秒未更新即失效。关闭 Socket / Plug 只关闭其强度贡献，不改变 PCS / LMS 的自动切换条件；必要的状态检测仍会保留。保存并应用会清除旧触发值，无需重新扫码。
 
 
 ## 配置文件参考

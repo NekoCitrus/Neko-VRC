@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import ctypes
+from ctypes import wintypes
 import json
 import socket
 import sys
@@ -9,7 +11,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.request import Request, urlopen
 
 import yaml
@@ -27,12 +29,15 @@ from srv.config_manager import (
     apply_basic_settings,
     parse_endpoint,
     validate_config,
+    TRIGGER_SWITCH_FIELDS,
+    default_trigger_switches,
 )
 from srv.connector.coyotev4ws import DGV4Connection
 from srv.oscquery import (
     OSCQueryAvatarSnapshot, OSCQueryService, VRChatOSCQueryClient,
     ServiceStateChange, parse_vrchat_avatar_node,
 )
+from srv.sps_depth import LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS, SPSZone, SPS_SOCKET, SPS_PLUG
 from srv.udp_relay import create_udp_relay
 from srv.steamvr_autostart import (
     APPLICATION_KEY,
@@ -40,7 +45,10 @@ from srv.steamvr_autostart import (
     configure_steamvr_autostart,
     write_manifest,
 )
-from srv.win32_ui import COPYRIGHT_ENTRIES, FRONTEND_CONTRIBUTORS, DesktopApplication
+from srv.win32_ui import (
+    COPYRIGHT_ENTRIES, FRONTEND_CONTRIBUTORS, DesktopApplication,
+    user32, gdi32, kernel32,
+)
 
 
 def free_udp_port():
@@ -56,6 +64,51 @@ def free_tcp_port():
 
 
 class ConfigManagerTests(unittest.TestCase):
+    def test_new_channel_source_switches_have_requested_device_defaults(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = ConfigManager(app_dir=root, config_dir=root)
+            settings, basic = manager.load()
+            runtime = apply_basic_settings(settings, basic)
+            for kind in ('coyote', 'opossum'):
+                for channel in ('channel_a', 'channel_b'):
+                    config = basic['dglab3'][kind][channel]
+                    for field, expected in default_trigger_switches(kind).items():
+                        self.assertIs(config[field], expected)
+                        self.assertIs(runtime['dglab3'][kind][channel][field], expected)
+                    self.assertTrue(config['extra_parameters']['enabled'])
+
+    def test_source_switches_survive_save_load_and_old_extra_switch_is_preserved(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = ConfigManager(app_dir=root, config_dir=root)
+            settings, basic = manager.load()
+            config = basic['dglab3']['coyote']['channel_a']
+            config.update(socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=True)
+            config['extra_parameters']['enabled'] = False
+            manager.save(settings, basic)
+            _settings, restored = manager.load()
+            self.assertEqual(restored['dglab3']['coyote']['channel_a'], config)
+            document = yaml.safe_load(manager.path.read_text(encoding='utf-8'))
+            for kind in ('coyote', 'opossum'):
+                for channel in ('channel_a', 'channel_b'):
+                    for field in TRIGGER_SWITCH_FIELDS:
+                        document['channels']['dglab3'][kind][channel].pop(field)
+            manager.path.write_text(yaml.safe_dump(document), encoding='utf-8')
+            _settings, migrated = manager.load()
+            old = migrated['dglab3']['coyote']['channel_a']
+            self.assertFalse(old['extra_parameters']['enabled'])
+            for field, expected in default_trigger_switches('coyote').items():
+                self.assertIs(old[field], expected)
+
+    def test_source_switch_config_rejects_non_boolean_values(self):
+        settings = copy.deepcopy(DEFAULT_SETTINGS)
+        settings['ws']['master_uuid'] = '86c053e8-4ce1-466b-b123-9e2944b8c490'
+        for field in TRIGGER_SWITCH_FIELDS:
+            for invalid in ('false', 0, None):
+                basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+                basic['dglab3']['opossum']['channel_b'][field] = invalid
+                with self.subTest(field=field, value=invalid), self.assertRaises(ValueError):
+                    validate_config(settings, basic)
+
     def test_first_run_creates_unified_appdata_config(self):
         with tempfile.TemporaryDirectory() as root:
             manager = ConfigManager(app_dir=Path(root) / 'app', config_dir=Path(root) / 'config')
@@ -331,6 +384,230 @@ class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OSCQueryServiceTests(unittest.TestCase):
+    def test_query_tree_does_not_announce_individually_disabled_inputs(self):
+        service = self.make_service()
+        for kind in ('coyote', 'opossum'):
+            for channel in ('channel_a', 'channel_b'):
+                config = service.settings['dglab3'][kind][channel]
+                config.update(socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=False)
+                config['extra_parameters']['enabled'] = False
+        self.assertEqual(service._paths(), [])
+        self.assertIsNone(service.node_for(PCS_PROXIMITY_ADDRESS))
+        self.assertIsNone(service.node_for(LMS_PROXIMITY_ADDRESS))
+        # Only observe Plug for the LMS attachment guard; no Socket/PCS.
+        service.settings['dglab3']['coyote']['channel_a']['lms_enabled'] = True
+        paths = service._paths()
+        self.assertIn(LMS_PROXIMITY_ADDRESS, paths)
+        self.assertTrue(any('/OGB/Pen/' in path for path in paths))
+        self.assertFalse(any('/OGB/Orf/' in path for path in paths))
+
+    def test_query_keeps_paths_but_excludes_non_numeric_socket_signals(self):
+        document = self.avatar_document(['avtr_current'])
+        base = '/avatar/parameters/OGB/Orf/One/'
+        document['CONTENTS']['parameters']['CONTENTS'] = {
+            'Root': {'FULL_PATH': base + 'PenSelfNewRoot', 'TYPE': 'f'},
+            'Tip': {'FULL_PATH': base + 'PenSelfNewTip', 'TYPE': 's'},
+        }
+        snapshot = parse_vrchat_avatar_node(document, 'http://127.0.0.1:19000')
+        self.assertEqual(len(snapshot.parameter_paths), 2)
+        self.assertEqual(snapshot.numeric_parameter_paths, (base + 'PenSelfNewRoot',))
+        published = []
+        client = VRChatOSCQueryClient(None, published.append)
+        client._publish(snapshot)
+        document['CONTENTS']['parameters']['CONTENTS']['Tip']['TYPE'] = 'f'
+        client._publish(parse_vrchat_avatar_node(document, snapshot.endpoint))
+        self.assertEqual(len(published), 2)
+
+    def test_repeated_avatar_change_republishes_unchanged_inventory(self):
+        published = []
+        client = VRChatOSCQueryClient(None, published.append)
+        snapshot = OSCQueryAvatarSnapshot('', (), 'http://127.0.0.1:19000')
+        client._publish(snapshot)
+        client._publish(snapshot)
+        self.assertEqual(len(published), 1)
+        client.request_refresh('')
+        client._publish(snapshot)
+        self.assertEqual(len(published), 2)
+
+    def test_receiver_announces_pcs_without_the_extra_switch(self):
+        service = self.make_service()
+        for kind in ('coyote', 'opossum'):
+            for channel in ('channel_a', 'channel_b'):
+                service.settings['dglab3'][kind][channel]['extra_parameters']['enabled'] = False
+        self.assertEqual(service.node_for(PCS_PROXIMITY_ADDRESS), {
+            'FULL_PATH': PCS_PROXIMITY_ADDRESS, 'TYPE': 'f', 'ACCESS': 2,
+        })
+
+    def test_lms_fallback_is_announced_when_extra_parameters_are_disabled(self):
+        service = self.make_service()
+        for kind in ('coyote', 'opossum'):
+            for channel in ('channel_a', 'channel_b'):
+                service.settings['dglab3'][kind][channel]['extra_parameters']['enabled'] = False
+        self.assertEqual(service.node_for(LMS_PROXIMITY_ADDRESS), {
+            'FULL_PATH': LMS_PROXIMITY_ADDRESS, 'TYPE': 'f', 'ACCESS': 2,
+        })
+
+    def avatar_document(self, avatar_value=None):
+        return {
+            'FULL_PATH': '/avatar',
+            'CONTENTS': {
+                'change': {'TYPE': 's', 'VALUE': avatar_value},
+                'parameters': {
+                    'FULL_PATH': '/avatar/parameters',
+                    'CONTENTS': {
+                        'Depth': {
+                            'FULL_PATH': '/avatar/parameters/OGB/Pen/Locked/PenOthers',
+                            'TYPE': 'f', 'VALUE': [1.0],
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_unknown_avatar_id_does_not_discard_live_parameters(self):
+        for value in (None, [], [None], ['Unknown'], [''], [False]):
+            with self.subTest(value=value):
+                snapshot = parse_vrchat_avatar_node(self.avatar_document(value))
+                self.assertIsNotNone(snapshot)
+                self.assertEqual(snapshot.avatar_id, '')
+                self.assertEqual(snapshot.parameter_paths, (
+                    '/avatar/parameters/OGB/Pen/Locked/PenOthers',
+                ))
+        document = self.avatar_document()
+        del document['CONTENTS']['change']
+        self.assertIsNotNone(parse_vrchat_avatar_node(document))
+
+    def test_invalid_parameter_tree_is_not_an_avatar(self):
+        for parameters in (None, [], 'invalid'):
+            document = self.avatar_document()
+            document['CONTENTS']['parameters'] = parameters
+            self.assertIsNone(parse_vrchat_avatar_node(document))
+
+    def test_receiver_explicitly_announces_avatar_change(self):
+        service = self.make_service()
+        self.assertEqual(service.node_for('/avatar/change'), {
+            'FULL_PATH': '/avatar/change', 'TYPE': 's', 'ACCESS': 2,
+        })
+        self.assertEqual(service.node_for('/avatar')['ACCESS'], 2)
+
+    def test_discovery_does_not_treat_other_receivers_as_vrchat(self):
+        zeroconf = Mock()
+        zeroconf.get_service_info.return_value = SimpleNamespace(
+            port=19000, parsed_addresses=lambda: ['127.0.0.1'],
+        )
+        client = VRChatOSCQueryClient(zeroconf, lambda snapshot: None)
+        client.service_names = [
+            'Neko-VRC._oscjson._tcp.local.',
+            'VRCFT-other._oscjson._tcp.local.',
+            'VRChat-Client-test._oscjson._tcp.local.',
+        ]
+        expected = OSCQueryAvatarSnapshot('', ('/avatar/parameters/Test',), 'http://127.0.0.1:19000')
+        with patch.object(client, '_fetch', return_value=expected) as fetch:
+            self.assertEqual(client._query_services(), expected)
+        self.assertEqual(zeroconf.get_service_info.call_count, 1)
+        fetch.assert_called_once_with('127.0.0.1', 19000)
+
+    def test_endpoint_change_publishes_an_otherwise_identical_avatar(self):
+        published = []
+        client = VRChatOSCQueryClient(None, published.append)
+        for endpoint in ('http://127.0.0.1:10001', 'http://127.0.0.1:10002'):
+            client._publish(OSCQueryAvatarSnapshot('', (), endpoint))
+        self.assertEqual(len(published), 2)
+
+    def test_anonymous_live_avatar_exposes_zones_without_using_metadata_values(self):
+        events = []
+        runtime = DeviceRuntime(apply_basic_settings(
+            copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS),
+        ), event_callback=events.append)
+        runtime._build_dispatcher()
+        self.addCleanup(runtime.chatbox_manager.cleanup, notify=False)
+        snapshot = parse_vrchat_avatar_node(self.avatar_document(), 'http://127.0.0.1:10001')
+        async def apply():
+            runtime._apply_avatar_snapshot(snapshot)
+            await asyncio.sleep(0)
+            for handler in runtime.handlers:
+                await handler.stop_background_jobs()
+        asyncio.run(apply())
+        event = next(event for event in events if event['type'] == 'avatar')
+        self.assertEqual(event['avatar_name'], '当前 Avatar')
+        self.assertEqual(event['plugs'], [{'zone_id': 'Locked', 'label': 'Locked'}])
+        for handler in runtime.handlers:
+            self.assertFalse(handler.get_mode_info()['is_active'])
+
+    def test_avatar_change_resets_anonymous_avatar_before_query_finishes(self):
+        runtime = DeviceRuntime(apply_basic_settings(
+            copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS),
+        ))
+        runtime._build_dispatcher()
+        self.addCleanup(runtime.chatbox_manager.cleanup, notify=False)
+        runtime.oscquery = Mock()
+        async def change():
+            runtime._avatar_change_handler('/avatar/change', '')
+            runtime._avatar_change_handler('/avatar/change', '')
+            await asyncio.sleep(0)
+            for handler in runtime.handlers:
+                await handler.stop_background_jobs()
+        with patch.object(runtime.handlers[0], 'reset_for_avatar_change') as reset:
+            asyncio.run(change())
+        self.assertEqual(reset.call_count, 2)
+        self.assertEqual(runtime.oscquery.request_avatar_refresh.call_count, 2)
+
+    def test_http_negotiation_and_both_mdns_advertisements(self):
+        service = self.make_service()
+        service.http_port = 0
+        zeroconf = Mock()
+        with patch('srv.oscquery.Zeroconf', return_value=zeroconf):
+            try:
+                service.start()
+                service.register_thread.join(timeout=2)
+                infos = [call.args[0] for call in zeroconf.register_service.call_args_list]
+                self.assertEqual({info.type for info in infos}, {
+                    '_oscjson._tcp.local.', '_osc._udp.local.',
+                })
+                self.assertEqual(infos[0].name.split('._osc')[0], infos[1].name.split('._osc')[0])
+                self.assertEqual(service.service_info.port, service.http_port)
+                self.assertEqual(service.osc_service_info.port, service.osc_port)
+                service.vrchat_client = Mock()
+                endpoint = f'http://127.0.0.1:{service.http_port}'
+                with urlopen(f'{endpoint}/?HOST_INFO', timeout=2) as response:
+                    host_info = json.load(response)
+                self.assertEqual(host_info['OSC_IP'], '127.0.0.1')
+                self.assertEqual(host_info['OSC_PORT'], service.osc_port)
+                self.assertEqual(host_info['EXTENSIONS'], {'ACCESS': True, 'TYPE': True})
+                with urlopen(f'{endpoint}/avatar/change', timeout=2) as response:
+                    self.assertEqual(json.load(response)['TYPE'], 's')
+                self.assertTrue(service.vrchat_client.request_refresh.called)
+            finally:
+                service.stop()
+        self.assertEqual(zeroconf.unregister_service.call_count, 2)
+
+    def test_live_http_tree_refreshes_after_unlock_without_avatar_change(self):
+        # Query the live server, never a stale avatar JSON. Unlocking may add
+        # parameters without changing the avatar ID or sending /avatar/change.
+        server = self.make_service()
+        server.http_port = 0
+        document = self.avatar_document([])
+        document['CONTENTS']['parameters']['CONTENTS'].clear()
+        server.node_for = Mock(return_value=document)
+        published = []
+        client = VRChatOSCQueryClient(None, published.append)
+        with patch('srv.oscquery.Zeroconf', return_value=Mock()):
+            try:
+                server.start()
+                snapshot = client._fetch('127.0.0.1', server.http_port)
+                client._publish(snapshot)
+                self.assertEqual(snapshot.parameter_paths, ())
+                document['CONTENTS']['parameters'] = self.avatar_document()['CONTENTS']['parameters']
+                snapshot = client._fetch('127.0.0.1', server.http_port)
+                client._publish(snapshot)
+                self.assertEqual(len(published), 2)
+                self.assertEqual(snapshot.avatar_id, '')
+                self.assertEqual(snapshot.parameter_paths, (
+                    '/avatar/parameters/OGB/Pen/Locked/PenOthers',
+                ))
+            finally:
+                server.stop()
+
     def test_mdns_callback_accepts_zeroconf_keyword_arguments(self):
         client = VRChatOSCQueryClient(None, lambda snapshot: None)
         for change, expected in ((ServiceStateChange.Added, {'VRChat'}),
@@ -541,6 +818,294 @@ class V4ConnectionStateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceControllerTests(unittest.TestCase):
+    def test_real_udp_source_checkboxes_hot_update_without_restarting_runtime(self):
+        basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        disabled = basic['dglab3']['opossum']['channel_a']
+        disabled.update(socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=False)
+        disabled['extra_parameters']['enabled'] = False
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), basic)
+        settings['ws']['listen_host'] = '127.0.0.1'
+        settings['ws']['listen_port'] = free_tcp_port()
+        settings['osc']['listen_port'] = free_udp_port()
+        settings['oscquery']['listen_port'] = 0
+        settings['chatbox']['enable'] = False
+        runtime = DeviceRuntime(settings)
+        client = None
+
+        def assert_depths(expected):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                values = [handler.current_strength_percentage for handler in runtime.handlers]
+                if all(abs(value - target) < 0.00001 for value, target in zip(values, expected)):
+                    break
+                time.sleep(0.02)
+            self.assertEqual(len(values), 4)
+            for value, target in zip(values, expected):
+                self.assertAlmostEqual(value, target, places=5)
+
+        try:
+            runtime.start()
+            original_query = runtime.oscquery
+            original_thread = runtime.thread
+            original_handlers = tuple(runtime.handlers)
+            client = SimpleUDPClient('127.0.0.1', runtime.oscquery.osc_port)
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
+            client.send_message(LMS_PROXIMITY_ADDRESS, 0.7)
+            assert_depths([0.9, 0.9, 0, 0.7])
+            updated = copy.deepcopy(settings)
+            updated['dglab3']['coyote']['channel_a'].update(pcs_enabled=False, lms_enabled=True)
+            updated['dglab3']['opossum']['channel_a']['pcs_enabled'] = True
+            runtime.apply_settings(updated)
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
+            client.send_message(LMS_PROXIMITY_ADDRESS, 0.7)
+            assert_depths([0.7, 0.9, 0.9, 0.7])
+            for kind in ('coyote', 'opossum'):
+                for channel in ('channel_a', 'channel_b'):
+                    config = updated['dglab3'][kind][channel]
+                    config.update(socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=False)
+                    config['extra_parameters']['enabled'] = False
+            runtime.apply_settings(updated)
+            client.send_message(PCS_PROXIMITY_ADDRESS, 1)
+            client.send_message(LMS_PROXIMITY_ADDRESS, 1)
+            client.send_message('/avatar/parameters/Shock/TouchAreaA', 1)
+            assert_depths([0, 0, 0, 0])
+            self.assertIs(runtime.oscquery, original_query)
+            self.assertIs(runtime.thread, original_thread)
+            self.assertEqual(tuple(runtime.handlers), original_handlers)
+        finally:
+            if client is not None:
+                client._sock.close()
+            runtime.stop()
+
+    def test_real_udp_pcs_follows_live_socket_inventory_per_channel(self):
+        basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        for kind in ('coyote', 'opossum'):
+            basic['dglab3'][kind]['channel_a']['socket_zone'] = 'One'
+            basic['dglab3'][kind]['channel_b']['socket_zone'] = 'Missing'
+            for channel in ('channel_a', 'channel_b'):
+                basic['dglab3'][kind][channel]['pcs_enabled'] = True
+                basic['dglab3'][kind][channel]['extra_parameters']['enabled'] = False
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), basic)
+        settings['ws']['listen_host'] = '127.0.0.1'
+        settings['ws']['listen_port'] = free_tcp_port()
+        settings['osc']['listen_port'] = free_udp_port()
+        settings['oscquery']['listen_port'] = 0
+        settings['chatbox']['enable'] = False
+        runtime = DeviceRuntime(settings)
+        client = None
+        base = '/avatar/parameters/OGB/Orf/One/'
+        document = {
+            'CONTENTS': {'parameters': {'CONTENTS': {
+                'Root': {'FULL_PATH': base + 'PenSelfNewRoot', 'TYPE': 'f', 'VALUE': [1]},
+                'Tip': {'FULL_PATH': base + 'PenSelfNewTip', 'TYPE': 's', 'VALUE': ['invalid']},
+            }}},
+        }
+
+        def apply_inventory():
+            snapshot = parse_vrchat_avatar_node(document, 'http://127.0.0.1:19000')
+            async def apply():
+                runtime._apply_avatar_snapshot(snapshot)
+                await asyncio.sleep(0)
+            asyncio.run_coroutine_threadsafe(apply(), runtime.loop).result(timeout=2)
+
+        def assert_depths(a, b):
+            expected = [a, b, a, b]
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                values = [handler.current_strength_percentage for handler in runtime.handlers]
+                if all(abs(value - target) < 0.00001 for value, target in zip(values, expected)):
+                    break
+                time.sleep(0.02)
+            self.assertEqual(len(values), 4)
+            for value, target in zip(values, expected):
+                self.assertAlmostEqual(value, target, places=5)
+
+        try:
+            runtime.start()
+            client = SimpleUDPClient('127.0.0.1', runtime.oscquery.osc_port)
+            apply_inventory()
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.6)
+            assert_depths(0.6, 0.6)
+            document['CONTENTS']['parameters']['CONTENTS']['Tip']['TYPE'] = 'f'
+            apply_inventory()
+            assert_depths(0, 0)  # Metadata values must not drive output.
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
+            assert_depths(0, 0.9)  # A has valid depth, even before any contact.
+            for _ in range(4):
+                client.send_message(base + 'PenSelfNewRoot', 0.2)
+                client.send_message(base + 'PenSelfNewTip', 0.6)
+            client.send_message(base + 'PenSelfNewRoot', 0.8)
+            client.send_message(base + 'PenSelfNewTip', 1)
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
+            assert_depths(0.5, 0.9)
+            document['CONTENTS']['parameters']['CONTENTS'].clear()
+            apply_inventory()
+            assert_depths(0, 0)
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.7)
+            assert_depths(0.7, 0.7)
+        finally:
+            if client is not None:
+                client._sock.close()
+            runtime.stop()
+
+    def test_real_udp_lms_gate_is_opossum_only_and_channel_specific(self):
+        basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        for channel in ('channel_a', 'channel_b'):
+            basic['dglab3']['coyote'][channel].update({'plug_zone': 'Never', 'socket_zone': 'Never'})
+        basic['dglab3']['opossum']['channel_a']['plug_zone'] = 'First'
+        basic['dglab3']['opossum']['channel_b']['plug_zone'] = 'Second'
+        # Explicit and wildcard extra bindings must not bypass the LMS gate.
+        basic['dglab3']['opossum']['channel_a']['extra_parameters'].update({
+            'top': 0.5, 'paths': [LMS_PROXIMITY_ADDRESS],
+        })
+        basic['dglab3']['opossum']['channel_b']['extra_parameters']['paths'] = [
+            '/avatar/parameters/lms/contact/*',
+        ]
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), basic)
+        settings['ws']['listen_host'] = '127.0.0.1'
+        settings['ws']['listen_port'] = free_tcp_port()
+        settings['osc']['listen_port'] = free_udp_port()
+        settings['oscquery']['listen_port'] = 0
+        settings['chatbox']['enable'] = False
+        runtime = DeviceRuntime(settings)
+        client = None
+
+        def assert_depths(a, b):
+            expected = [0, 0, a, b]
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                infos = [handler.get_mode_info() for handler in runtime.handlers]
+                if all(abs(info['strength_percentage'] - value) < 0.00001
+                       for info, value in zip(infos, expected)):
+                    break
+                time.sleep(0.02)
+            self.assertEqual(len(infos), 4)
+            for info, value in zip(infos, expected):
+                self.assertAlmostEqual(info['strength_percentage'], value, places=5)
+
+        try:
+            runtime.start()
+            client = SimpleUDPClient('127.0.0.1', runtime.oscquery.osc_port)
+            first = '/avatar/parameters/OGB/Pen/First/PenSelf'
+            second = '/avatar/parameters/OGB/Pen/Second/PenOthers'
+            client.send_message(LMS_PROXIMITY_ADDRESS, 0.4)
+            assert_depths(0.8, 0.4)
+            client.send_message(first, 0.2)
+            client.send_message(LMS_PROXIMITY_ADDRESS, 0.4)
+            assert_depths(0.2, 0.4)
+            client.send_message(second, 0.3)
+            client.send_message(first, 0)
+            client.send_message(LMS_PROXIMITY_ADDRESS, 0.4)
+            assert_depths(0.8, 0.3)
+            client.send_message(second, 0)
+            client.send_message(LMS_PROXIMITY_ADDRESS, 0.4)
+            assert_depths(0.8, 0.4)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and any(handler.is_active for handler in runtime.handlers):
+                time.sleep(0.02)
+            assert_depths(0, 0)
+        finally:
+            if client is not None:
+                client._sock.close()
+            runtime.stop()
+
+    def test_real_udp_self_interaction_reaches_all_four_channels(self):
+        basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        for kind in ('coyote', 'opossum'):
+            for channel, zone in (('channel_a', '*'), ('channel_b', 'Own')):
+                basic['dglab3'][kind][channel].update({
+                    'socket_zone': zone, 'plug_zone': zone,
+                })
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), basic)
+        settings['ws']['listen_host'] = '127.0.0.1'
+        settings['ws']['listen_port'] = free_tcp_port()
+        settings['osc']['listen_port'] = free_udp_port()
+        settings['oscquery']['listen_port'] = 0
+        settings['chatbox']['enable'] = False
+        runtime = DeviceRuntime(settings)
+        client = None
+
+        def assert_depth(expected):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                depths = [handler.get_mode_info()['strength_percentage']
+                          for handler in runtime.handlers]
+                if all(abs(depth - expected) < 0.00001 for depth in depths):
+                    break
+                time.sleep(0.02)
+            self.assertEqual(len(depths), 4)
+            for depth in depths:
+                self.assertAlmostEqual(depth, expected, places=5)
+
+        try:
+            runtime.start()
+            client = SimpleUDPClient('127.0.0.1', runtime.oscquery.osc_port)
+            root = '/avatar/parameters/OGB/Orf/Own/PenSelfNewRoot'
+            tip = '/avatar/parameters/OGB/Orf/Own/PenSelfNewTip'
+            own_plug = '/avatar/parameters/OGB/Pen/Own/PenSelf'
+            other_plug = '/avatar/parameters/OGB/Pen/Own/PenOthers'
+            for _ in range(4):
+                client.send_message(root, 0.2)
+                client.send_message(tip, 0.6)
+            client.send_message(root, 0.8)
+            client.send_message(tip, 1.0)
+            assert_depth(0.5)
+            client.send_message(own_plug, 0.7)
+            assert_depth(0.7)
+            client.send_message(other_plug, 0.9)
+            assert_depth(0.9)
+            client.send_message(other_plug, 0)
+            assert_depth(0.7)
+            client.send_message(own_plug, 0)
+            assert_depth(0.5)
+            client.send_message(root, 0)
+            client.send_message(tip, 0)
+            assert_depth(0)
+            self.assertTrue(all(not handler.is_active for handler in runtime.handlers))
+        finally:
+            if client is not None:
+                client._sock.close()
+            runtime.stop()
+
+    def test_occupied_osc_and_query_ports_negotiate_available_ports(self):
+        settings = apply_basic_settings(
+            copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS),
+        )
+        settings['ws']['listen_host'] = '127.0.0.1'
+        settings['ws']['listen_port'] = free_tcp_port()
+        settings['chatbox']['enable'] = False
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as occupied_udp, \
+                socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_http:
+            occupied_udp.bind(('127.0.0.1', 0))
+            occupied_http.bind(('127.0.0.1', 0))
+            occupied_http.listen()
+            settings['osc']['listen_port'] = occupied_udp.getsockname()[1]
+            settings['oscquery']['listen_port'] = occupied_http.getsockname()[1]
+            original_settings = copy.deepcopy(settings)
+            runtime = DeviceRuntime(settings)
+            client = None
+            try:
+                runtime.start()
+                self.assertNotEqual(runtime.oscquery.osc_port, settings['osc']['listen_port'])
+                self.assertNotEqual(runtime.oscquery.http_port, settings['oscquery']['listen_port'])
+                with urlopen(f'http://127.0.0.1:{runtime.oscquery.http_port}/?HOST_INFO', timeout=2) as response:
+                    host_info = json.load(response)
+                self.assertEqual(host_info['OSC_PORT'], runtime.oscquery.osc_port)
+                client = SimpleUDPClient(host_info['OSC_IP'], host_info['OSC_PORT'])
+                client.send_message('/avatar/parameters/OGB/Pen/Locked/PenOthers', 0.7)
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    value = runtime.handlers[0].get_mode_info()['strength_percentage']
+                    if abs(value - 0.7) < 0.00001:
+                        break
+                    time.sleep(0.02)
+                self.assertAlmostEqual(value, 0.7, places=5)
+                self.assertEqual(settings, original_settings)
+            finally:
+                if client is not None:
+                    client._sock.close()
+                runtime.stop()
+
     def test_apply_settings_keeps_the_existing_runtime(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
@@ -1327,6 +1892,83 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DesktopApplicationTests(unittest.TestCase):
+    def test_native_channel_checkboxes_fit_and_save_independently(self):
+        # A hidden native parent exercises actual controls without starting
+        # services, writing user settings, or connecting to an APP/device.
+        app = object.__new__(DesktopApplication)
+        app.settings = copy.deepcopy(DEFAULT_SETTINGS)
+        app.settings['ws']['master_uuid'] = '86c053e8-4ce1-466b-b123-9e2944b8c490'
+        app.basic_settings = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        app.controls = {}
+        app.panels = {'coyote': [], 'opossum': []}
+        app._combo_buffers = []
+        app.sps_zone_options = {
+            SPS_SOCKET: [SPSZone(SPS_SOCKET, '*', '任何 Socket')],
+            SPS_PLUG: [SPSZone(SPS_PLUG, '*', '任何 Plug')],
+        }
+        app.channel_zone_selections = {
+            (kind, channel): {SPS_SOCKET: '*', SPS_PLUG: '*'}
+            for kind in ('coyote', 'opossum') for channel in ('A', 'B')
+        }
+        app.hwnd = user32.CreateWindowExW(
+            0, 'STATIC', 'checkbox layout test', 0, 0, 0, 600, 540,
+            None, None, kernel32.GetModuleHandleW(None), None,
+        )
+        self.assertTrue(app.hwnd)
+        app.font = gdi32.CreateFontW(-17, 0, 0, 0, 400, False, False, False,
+                                   1, 0, 0, 5, 0, 'Segoe UI')
+        self.assertTrue(app.font)
+        user32.GetDC.argtypes = [wintypes.HWND]
+        user32.GetDC.restype = wintypes.HDC
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+        gdi32.SelectObject.restype = wintypes.HANDLE
+        gdi32.GetTextExtentPoint32W.argtypes = [
+            wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.SIZE),
+        ]
+        hdc = user32.GetDC(app.hwnd)
+        self.assertTrue(hdc)
+        old_font = gdi32.SelectObject(hdc, app.font)
+        expected = {}
+        try:
+            for key in ('chatbox', 'background', 'steamvr_auto_start'):
+                app._check(key, key, False, 0, 0, 100)
+            for kind in ('coyote', 'opossum'):
+                for index, channel in enumerate(('A', 'B')):
+                    app._build_device_channel(kind, channel, 0, index * 252, kind)
+                    for field, default in default_trigger_switches(kind).items():
+                        key = f'{field}_{kind}_{channel.lower()}'
+                        self.assertIs(app._is_checked(key), default)
+                    extra_key = f'extra_enabled_{kind}_{channel.lower()}'
+                    self.assertTrue(app._is_checked(extra_key))
+                    keys = [f'{field}_{kind}_{channel.lower()}' for field in TRIGGER_SWITCH_FIELDS] + [extra_key]
+                    for position, key in enumerate(keys):
+                        text = app._get_text(key)
+                        extent, rect = wintypes.SIZE(), wintypes.RECT()
+                        self.assertTrue(gdi32.GetTextExtentPoint32W(hdc, text, len(text), ctypes.byref(extent)))
+                        self.assertTrue(user32.GetWindowRect(app.controls[key], ctypes.byref(rect)))
+                        self.assertLessEqual(extent.cx + 24, rect.right - rect.left, text)
+                        self.assertLessEqual(extent.cy, rect.bottom - rect.top, text)
+                        value = (position + index + (kind == 'opossum')) % 2 == 0
+                        app._set_checked(key, value)
+                        expected[key] = value
+            _settings, basic = app._read_form()
+            for kind in ('coyote', 'opossum'):
+                for channel in ('a', 'b'):
+                    config = basic['dglab3'][kind][f'channel_{channel}']
+                    for field in TRIGGER_SWITCH_FIELDS:
+                        self.assertIs(config[field], expected[f'{field}_{kind}_{channel}'])
+                    self.assertIs(config['extra_parameters']['enabled'], expected[f'extra_enabled_{kind}_{channel}'])
+                    self.assertEqual(config['socket_zone'], '*')
+                    self.assertEqual(config['plug_zone'], '*')
+            self.assertTrue(app.basic_settings['dglab3']['coyote']['channel_a']['socket_enabled'])
+        finally:
+            gdi32.SelectObject(hdc, old_font)
+            user32.ReleaseDC(app.hwnd, hdc)
+            user32.DestroyWindow(app.hwnd)
+            gdi32.DeleteObject(app.font)
+
     def test_copyright_page_lists_all_requested_sources(self):
         self.assertEqual(
             COPYRIGHT_ENTRIES,

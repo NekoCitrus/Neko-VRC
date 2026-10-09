@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+from itertools import product
 import tempfile
 import unittest
 import uuid
@@ -12,14 +13,18 @@ from unittest.mock import patch
 import shocking_vrchat
 import srv
 from srv.advanced_chatbox_manager import AdvancedChatboxManager
+from srv.config_manager import default_trigger_switches
 from srv.handler.base_handler import BaseHandler
-from srv.handler.shock_handler import ShockHandler
+from srv.handler.shock_handler import ShockHandler, SOURCE_LMS, SOURCE_PCS
 from srv.sps_depth import (
     SPSDepthCalculator,
     SPS_PLUG,
     SPS_SOCKET,
     find_avatar_sps_config,
     load_avatar_sps_config,
+    LMS_PROXIMITY_ADDRESS,
+    PCS_PROXIMITY_ADDRESS,
+    has_socket_depth_parameters,
 )
 from srv.waveform import (
     frame_amplitudes,
@@ -45,6 +50,7 @@ def make_settings():
         'dglab3': {
             device_kind: {
                 'channel_a': {
+                    **default_trigger_switches(device_kind),
                     'socket_zone': 'TestSocket',
                     'plug_zone': 'Test',
                     'extra_parameters': {
@@ -76,6 +82,430 @@ class BaseHandlerTests(unittest.TestCase):
 
 
 class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_trigger_cannot_restore_strength_after_hot_disable(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            # Queue a positive input, then disable it before its async task runs.
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+            config = copy.deepcopy(handler.shock_settings)
+            config['lms_enabled'] = False
+            await handler.reconfigure(config)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertFalse(handler.is_active)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_all_source_switch_combinations_only_use_enabled_inputs(self):
+        for kind in ('coyote', 'opossum'):
+            for socket, plug, extra, pcs, lms in product((False, True), repeat=5):
+                with self.subTest(device=kind, flags=(socket, plug, extra, pcs, lms)):
+                    settings = make_settings()
+                    config = settings['dglab3'][kind]['channel_a']
+                    config.update(socket_enabled=socket, plug_enabled=plug,
+                                  pcs_enabled=pcs, lms_enabled=lms)
+                    config['extra_parameters']['enabled'] = extra
+                    handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind=kind)
+                    try:
+                        handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.9)
+                        handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.7)
+                        handler.osc_handler('/avatar/parameters/Shock/TouchAreaA', ('extra', 'value'), 0.5)
+                        await asyncio.sleep(0)
+                        self.assertEqual(handler.current_strength_percentage,
+                                         max(0.9 if pcs else 0, 0.7 if lms else 0, 0.5 if extra else 0))
+                        handler.osc_handler('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',
+                                            (SPS_SOCKET, 'PenSelf'), 0.3)
+                        handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf',
+                                            (SPS_PLUG, 'PenSelf'), 0.4)
+                        await asyncio.sleep(0)
+                        expected = max(0.3 if socket else 0, 0.4 if plug else 0, 0.5 if extra else 0)
+                        self.assertEqual(handler.current_strength_percentage, expected)
+                        self.assertEqual(await handler.trigger_map_event(0.1), extra)
+                        self.assertEqual(handler.current_strength_percentage, 1 if extra else expected)
+                    finally:
+                        await handler.stop_background_jobs()
+
+    async def test_closed_sources_cannot_bypass_switches_via_extra_wildcard(self):
+        settings = make_settings()
+        settings['dglab3']['coyote']['channel_a'].update(
+            socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=False,
+        )
+        handler = ShockHandler(settings, FakeDGConnection(), 'A')
+        try:
+            self.assertTrue(all(binding[0] == 'extra' for _path, binding in handler.osc_bindings()))
+            for path in (PCS_PROXIMITY_ADDRESS, LMS_PROXIMITY_ADDRESS,
+                         '/avatar/parameters/OGB/Orf/TestSocket/PenSelf',
+                         '/avatar/parameters/OGB/Pen/Test/PenSelf'):
+                handler.osc_handler(path, ('extra', 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+            handler.osc_handler('/avatar/parameters/Shock/TouchAreaA', ('extra', 'value'), 0.6)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.6)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_disabled_plug_still_detects_attachment_for_enabled_lms(self):
+        settings = make_settings()
+        settings['dglab3']['opossum']['channel_a']['plug_enabled'] = False
+        handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='opossum')
+        path = '/avatar/parameters/OGB/Pen/Test/PenSelf'
+        try:
+            self.assertIn(path, dict(handler.osc_bindings()))
+            handler.osc_handler(path, (SPS_PLUG, 'PenSelf'), 0.4)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+            handler.osc_handler(path, (SPS_PLUG, 'PenSelf'), 0)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 1)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_disabled_socket_keeps_valid_parameter_guard_for_enabled_pcs(self):
+        settings = make_settings()
+        settings['dglab3']['coyote']['channel_a']['socket_enabled'] = False
+        handler = ShockHandler(settings, FakeDGConnection(), 'A')
+        try:
+            handler.osc_handler('/avatar/parameters/OGB/Orf/TestSocket/PenSelf', (SPS_SOCKET, 'PenSelf'), 0.4)
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertTrue(handler.socket_depth_available)
+            self.assertEqual(handler.current_strength_percentage, 0)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_hot_disabling_every_source_clears_old_strength_and_bindings(self):
+        connection = FakeDGConnection()
+        handler = ShockHandler(make_settings(), connection, 'A', device_kind='opossum')
+        try:
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertTrue(handler.is_active)
+            config = copy.deepcopy(handler.shock_settings)
+            config.update(socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=False)
+            config['extra_parameters']['enabled'] = False
+            await handler.reconfigure(config)
+            self.assertEqual(handler.osc_bindings(), ())
+            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertFalse(handler.is_active)
+            self.assertIn(('opossum', 'A'), connection.cleared)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_missing_socket_parameters_automatically_use_pcs_distance(self):
+        for kind in ('coyote', 'opossum'):
+            with self.subTest(device=kind):
+                settings = make_settings()
+                settings['dglab3'][kind]['channel_a']['pcs_enabled'] = True
+                extra = settings['dglab3'][kind]['channel_a']['extra_parameters']
+                extra.update({'enabled': False, 'bottom': 0.2, 'top': 0.8})
+                handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind=kind)
+                try:
+                    self.assertIn(PCS_PROXIMITY_ADDRESS, dict(handler.osc_bindings()))
+                    handler.set_avatar_parameters((PCS_PROXIMITY_ADDRESS,))
+                    handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.5)
+                    await asyncio.sleep(0)
+                    self.assertFalse(handler.socket_depth_available)
+                    self.assertAlmostEqual(handler.current_strength_percentage, 0.5)
+                    self.assertEqual(handler.active_source, SOURCE_PCS)
+                    self.assertEqual(handler.last_parameter, PCS_PROXIMITY_ADDRESS)
+                finally:
+                    await handler.stop_background_jobs()
+
+    async def test_declared_socket_parameters_disable_pcs_even_when_depth_is_zero(self):
+        base = '/avatar/parameters/OGB/Orf/TestSocket/'
+        for signals in (('PenSelf',), ('PenOthersNewRoot', 'PenOthersNewTip')):
+            with self.subTest(signals=signals):
+                handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+                try:
+                    handler.set_avatar_parameters(tuple(base + signal for signal in signals))
+                    handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 1)
+                    await asyncio.sleep(0)
+                    self.assertTrue(handler.socket_depth_available)
+                    self.assertEqual(handler.current_strength_percentage, 0)
+                    self.assertFalse(handler.is_active)
+                finally:
+                    await handler.stop_background_jobs()
+
+    async def test_zero_valued_live_root_tip_pair_is_also_valid_socket_evidence(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        base = '/avatar/parameters/OGB/Orf/TestSocket/'
+        try:
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.8)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
+            handler.osc_handler(base + 'PenSelfNewRoot', (SPS_SOCKET, 'PenSelfNewRoot'), 0)
+            await asyncio.sleep(0)
+            self.assertFalse(handler.socket_depth_available)
+            handler.osc_handler(base + 'PenSelfNewTip', (SPS_SOCKET, 'PenSelfNewTip'), 0)
+            await asyncio.sleep(0)
+            self.assertTrue(handler.socket_depth_available)
+            self.assertEqual(handler.current_strength_percentage, 0)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_pcs_extra_binding_cannot_bypass_socket_availability(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        try:
+            handler.set_avatar_parameters(('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',))
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, ('extra', 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertNotIn(PCS_PROXIMITY_ADDRESS, handler.extra_values)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_pcs_timeout_clears_output_without_restarting_old_value(self):
+        connection = FakeDGConnection()
+        handler = ShockHandler(make_settings(), connection, 'A')
+        handler.start_background_jobs()
+        try:
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.8)
+            await asyncio.sleep(0.12)
+            self.assertTrue(connection.waves)
+            await asyncio.sleep(0.46)
+            self.assertFalse(handler.is_active)
+            self.assertIsNone(handler.pcs_value)
+            count = len(connection.waves)
+            await asyncio.sleep(0.12)
+            self.assertEqual(len(connection.waves), count)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_pcs_availability_rechecks_selected_socket_on_hot_update(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        try:
+            paths = ('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',)
+            handler.set_avatar_parameters(paths)
+            await asyncio.sleep(0)
+            self.assertTrue(handler.socket_depth_available)
+            config = copy.deepcopy(handler.shock_settings)
+            config['socket_zone'] = 'Missing'
+            await handler.reconfigure(config)
+            self.assertFalse(handler.socket_depth_available)
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.8)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
+            handler.reset_for_avatar_change()
+            await asyncio.sleep(0)
+            self.assertIsNone(handler.pcs_value)
+            self.assertIsNone(handler.avatar_parameter_paths)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_pcs_and_lms_fallbacks_keep_plug_extra_and_map_rules(self):
+        settings = make_settings()
+        settings['dglab3']['opossum']['channel_a']['pcs_enabled'] = True
+        handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.6)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.4)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.active_source, SOURCE_PCS)
+            handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf', (SPS_PLUG, 'PenSelf'), 0.2)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.6)
+            handler.osc_handler('/avatar/parameters/Shock/TouchAreaA', ('extra', 'value'), 0.8)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
+            await handler.trigger_map_event(1)
+            self.assertEqual(handler.active_source, 'map')
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_parameter_refresh_removes_stale_socket_and_pcs_values(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        socket = '/avatar/parameters/OGB/Orf/TestSocket/PenSelf'
+        try:
+            handler.set_avatar_parameters((socket,))
+            handler.osc_handler(socket, (SPS_SOCKET, 'PenSelf'), 0.7)
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.8)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.7)
+            handler.set_avatar_parameters((PCS_PROXIMITY_ADDRESS,))
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertFalse(handler.socket_depth_available)
+            handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.8)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_lms_fallback_is_automatically_bound_only_for_opossum(self):
+        for kind in ('coyote', 'opossum'):
+            handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind=kind)
+            self.assertEqual(LMS_PROXIMITY_ADDRESS in dict(handler.osc_bindings()), kind == 'opossum')
+
+    async def test_lms_distance_uses_channel_range_even_without_extra_switch(self):
+        settings = make_settings()
+        extra = settings['dglab3']['opossum']['channel_a']['extra_parameters']
+        extra.update({'enabled': False, 'bottom': 0.2, 'top': 0.8})
+        handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            for raw, expected in ((0.1, 0), (0.5, 0.5), (0.9, 1)):
+                handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), raw)
+                await asyncio.sleep(0)
+                self.assertAlmostEqual(handler.current_strength_percentage, expected)
+            self.assertEqual(handler.active_source, SOURCE_LMS)
+            self.assertEqual(handler.last_parameter, LMS_PROXIMITY_ADDRESS)
+            self.assertEqual(handler.last_raw_value, 0.9)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_positive_self_or_other_plug_blocks_lms_until_withdrawal(self):
+        for signal in ('PenSelf', 'PenOthers'):
+            with self.subTest(signal=signal):
+                handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
+                path = f'/avatar/parameters/OGB/Pen/Test/{signal}'
+                try:
+                    handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.9)
+                    await asyncio.sleep(0)
+                    self.assertEqual(handler.current_strength_percentage, 0.9)
+                    handler.osc_handler(path, (SPS_PLUG, signal), 0.1)
+                    handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+                    await asyncio.sleep(0)
+                    self.assertEqual(handler.current_strength_percentage, 0.1)
+                    self.assertEqual(handler.active_source, SPS_PLUG)
+                    handler.osc_handler(path, (SPS_PLUG, signal), 0)
+                    await asyncio.sleep(0)
+                    self.assertEqual(handler.current_strength_percentage, 1)
+                    self.assertEqual(handler.active_source, SOURCE_LMS)
+                finally:
+                    await handler.stop_background_jobs()
+
+    async def test_lms_cannot_bypass_gate_through_extra_parameter_binding(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf', (SPS_PLUG, 'PenSelf'), 0.2)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, ('extra', 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.2)
+            self.assertNotIn(LMS_PROXIMITY_ADDRESS, handler.extra_values)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_any_selected_plug_with_positive_depth_keeps_lms_blocked(self):
+        settings = make_settings()
+        settings['dglab3']['opossum']['channel_a']['plug_zone'] = '*'
+        handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            handler.osc_handler('/avatar/parameters/OGB/Pen/First/PenSelf', (SPS_PLUG, 'PenSelf'), 0.2)
+            handler.osc_handler('/avatar/parameters/OGB/Pen/Second/PenOthers', (SPS_PLUG, 'PenOthers'), 0)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.2)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_lms_keeps_socket_extra_and_map_maximum_logic(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            handler.osc_handler('/avatar/parameters/OGB/Orf/TestSocket/PenSelf', (SPS_SOCKET, 'PenSelf'), 0.7)
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.4)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.7)
+            handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf', (SPS_PLUG, 'PenSelf'), 0.1)
+            handler.osc_handler('/avatar/parameters/Shock/TouchAreaA', ('extra', 'value'), 0.8)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
+            await handler.trigger_map_event(0.2)
+            self.assertEqual(handler.current_strength_percentage, 1)
+            self.assertEqual(handler.active_source, 'map')
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_lms_timeout_stops_output_and_does_not_replay_after_withdrawal(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
+        handler.start_background_jobs()
+        try:
+            handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.8)
+            await asyncio.sleep(0.12)
+            self.assertTrue(handler.is_active)
+            await asyncio.sleep(0.46)
+            self.assertFalse(handler.is_active)
+            self.assertEqual(handler.current_strength_percentage, 0)
+            handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf', (SPS_PLUG, 'PenSelf'), 0.2)
+            await asyncio.sleep(0)
+            handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf', (SPS_PLUG, 'PenSelf'), 0)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_avatar_change_and_hot_settings_discard_lms_values(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
+        try:
+            for action in ('avatar', 'settings'):
+                handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.8)
+                await asyncio.sleep(0)
+                if action == 'avatar':
+                    handler.reset_for_avatar_change()
+                    await asyncio.sleep(0)
+                else:
+                    await handler.reconfigure(copy.deepcopy(handler.shock_settings))
+                self.assertEqual(handler._winner()[0], 0)
+                self.assertEqual(handler.current_strength_percentage, 0)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_self_socket_and_plug_drive_both_devices_and_channels(self):
+        for device_kind in ('coyote', 'opossum'):
+            for channel in ('A', 'B'):
+                with self.subTest(device=device_kind, channel=channel):
+                    settings = make_settings()
+                    settings['dglab3'][device_kind]['channel_b'] = copy.deepcopy(
+                        settings['dglab3'][device_kind]['channel_a'],
+                    )
+                    connection = FakeDGConnection()
+                    handler = ShockHandler(settings, connection, channel, device_kind=device_kind)
+                    bindings = dict(handler.osc_bindings())
+                    socket = '/avatar/parameters/OGB/Orf/TestSocket/'
+                    plug = '/avatar/parameters/OGB/Pen/Test/'
+
+                    async def send(path, value):
+                        handler.osc_handler(path, bindings[path], value)
+                        await asyncio.sleep(0)
+
+                    try:
+                        for _ in range(4):
+                            await send(socket + 'PenSelfNewRoot', 0.2)
+                            await send(socket + 'PenSelfNewTip', 0.6)
+                        await send(socket + 'PenSelfNewRoot', 0.8)
+                        await send(socket + 'PenSelfNewTip', 1.0)
+                        self.assertAlmostEqual(handler.current_strength_percentage, 0.5)
+                        self.assertEqual(handler.active_source, SPS_SOCKET)
+
+                        feeder = handler._track_task(handler.depth_background_wave_feeder())
+                        await asyncio.sleep(0.12)
+                        self.assertTrue(connection.waves)
+                        self.assertEqual(connection.waves[-1][:2], (device_kind, channel))
+                        self.assertEqual(connection.waves[-1][2][0],
+                                         scale_coyote_frame(handler.wave_frames[0], 0.5))
+                        feeder.cancel()
+                        await asyncio.gather(feeder, return_exceptions=True)
+
+                        await send(plug + 'PenSelf', 0.7)
+                        self.assertEqual(handler.current_strength_percentage, 0.7)
+                        self.assertEqual(handler.active_source, SPS_PLUG)
+                        await send(plug + 'PenOthers', 0.9)
+                        self.assertEqual(handler.current_strength_percentage, 0.9)
+                        await send(plug + 'PenOthers', 0)
+                        self.assertEqual(handler.current_strength_percentage, 0.7)
+                        await send(plug + 'PenSelf', 0)
+                        self.assertAlmostEqual(handler.current_strength_percentage, 0.5)
+                        await send(socket + 'PenSelfNewRoot', 0)
+                        await send(socket + 'PenSelfNewTip', 0)
+                        self.assertEqual(handler.current_strength_percentage, 0)
+                        self.assertFalse(handler.is_active)
+                    finally:
+                        await handler.stop_background_jobs()
+
     async def test_device_kinds_use_independent_source_settings(self):
         settings = make_settings()
         settings['dglab3']['coyote']['channel_a'].update({
@@ -255,6 +685,57 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SPSDepthTests(unittest.TestCase):
+    def test_valid_socket_depth_requires_a_direct_depth_or_matching_pair(self):
+        base = '/avatar/parameters/OGB/Orf/'
+        for signals, valid in (
+            ([], False),
+            (['One/TouchSelf', 'One/FrotOthers'], False),
+            (['One/PenSelfNewRoot'], False),
+            (['One/PenSelfNewRoot', 'Two/PenSelfNewTip'], False),
+            (['One/PenSelfNewRoot', 'One/PenOthersNewTip'], False),
+            (['One/PenSelfNewRoot', 'One/PenSelfNewTip'], True),
+            (['One/PenOthers'], True),
+        ):
+            with self.subTest(signals=signals):
+                self.assertEqual(has_socket_depth_parameters([base + signal for signal in signals]), valid)
+        self.assertFalse(has_socket_depth_parameters([base + 'One/PenSelf'], 'Two'))
+
+    def test_plug_self_only_tracks_depth_and_withdrawal(self):
+        calculator = SPSDepthCalculator(SPS_PLUG)
+        self.assertEqual(calculator.update('PenSelf', 0.6), 0.6)
+        self.assertEqual(calculator.update('PenSelf', 0), 0)
+
+    def test_socket_self_root_tip_uses_the_same_depth_formula(self):
+        calculator = SPSDepthCalculator(SPS_SOCKET)
+        for _ in range(4):
+            calculator.update('PenSelfNewRoot', 0.2)
+            self.assertEqual(calculator.update('PenSelfNewTip', 0.6), 0)
+        calculator.update('PenSelfNewRoot', 0.8)
+        self.assertAlmostEqual(calculator.update('PenSelfNewTip', 1), 0.5)
+        calculator.update('PenSelfNewRoot', 0)
+        self.assertEqual(calculator.update('PenSelfNewTip', 0), 0)
+        self.assertIsNone(calculator.detectors['Self'].length)
+
+    def test_socket_self_and_others_keep_separate_length_estimates(self):
+        calculator = SPSDepthCalculator(SPS_SOCKET)
+        for owner, root, tip in (('Self', 0.2, 0.6), ('Others', 0.1, 0.9)):
+            for _ in range(4):
+                calculator.update(f'Pen{owner}NewRoot', root)
+                calculator.update(f'Pen{owner}NewTip', tip)
+        self.assertAlmostEqual(calculator.detectors['Self'].length, 0.4)
+        self.assertAlmostEqual(calculator.detectors['Others'].length, 0.8)
+        calculator.update('PenSelfNewRoot', 0.8)
+        calculator.update('PenSelfNewTip', 1)
+        calculator.update('PenOthersNewRoot', 0.5)
+        self.assertAlmostEqual(calculator.update('PenOthersNewTip', 1), 0.5)
+        calculator.update('PenSelfNewRoot', 0)
+        self.assertAlmostEqual(calculator.update('PenSelfNewTip', 0), 0.375)
+
+    def test_legacy_socket_self_signal_is_supported(self):
+        calculator = SPSDepthCalculator(SPS_SOCKET)
+        self.assertEqual(calculator.update('PenSelf', 0.6), 0.6)
+        self.assertEqual(calculator.update('PenSelf', 0), 0)
+
     def test_avatar_json_exposes_socket_and_plug_dropdown_options(self):
         document = {
             'id': 'avtr_test',

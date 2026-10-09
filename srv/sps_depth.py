@@ -10,6 +10,8 @@ from pathlib import Path
 
 AVATAR_PARAMETER_PREFIX = '/avatar/parameters/'
 OGB_PARAMETER_PREFIX = f'{AVATAR_PARAMETER_PREFIX}OGB/'
+LMS_PROXIMITY_ADDRESS = f'{AVATAR_PARAMETER_PREFIX}lms/contact/proximity'
+PCS_PROXIMITY_ADDRESS = f'{AVATAR_PARAMETER_PREFIX}pcs/contact/proximity'
 SPS_SOCKET = 'sps_socket'
 SPS_PLUG = 'sps_plug'
 SPS_TRIGGER_TYPES = (SPS_SOCKET, SPS_PLUG)
@@ -29,6 +31,7 @@ class AvatarSPSConfig:
     path: Path
     sockets: tuple[SPSZone, ...]
     plugs: tuple[SPSZone, ...]
+    numeric_parameter_paths: tuple[str, ...] = ()
 
 
 def _zone_from_parameter(parameter):
@@ -55,7 +58,12 @@ def load_avatar_sps_config(path):
     with path.open('r', encoding='utf-8-sig') as stream:
         document = json.load(stream)
     zones = {}
+    numeric_paths = set()
     for parameter in document.get('parameters', []):
+        output = parameter.get('output') or {}
+        if (output.get('type') in ('Float', 'Int', 'Bool')
+                and isinstance(output.get('address'), str)):
+            numeric_paths.add(output['address'])
         zone = _zone_from_parameter(parameter)
         if zone is not None:
             zones[(zone.kind, zone.zone_id)] = zone
@@ -73,6 +81,7 @@ def load_avatar_sps_config(path):
         path=path,
         sockets=sockets,
         plugs=plugs,
+        numeric_parameter_paths=tuple(sorted(numeric_paths)),
     )
 
 
@@ -117,6 +126,28 @@ def find_avatar_sps_config(avatar_id, app_dir=None):
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             continue
     return None
+
+
+def has_socket_depth_parameters(parameter_paths, zone_id='*'):
+    """A direct depth or same-zone, same-owner Root/Tip pair is sufficient.
+
+    Zero values remain valid. Touch/Frot signals and unmatched Root/Tip
+    halves cannot stand in for insertion depth.
+    """
+    zones = {}
+    for path in parameter_paths:
+        parts = path.strip('/').split('/')
+        if len(parts) != 6 or parts[:4] != ['avatar', 'parameters', 'OGB', 'Orf']:
+            continue
+        zone, signal = parts[4:]
+        if zone_id != '*' and zone != zone_id:
+            continue
+        zones.setdefault(zone, set()).add(signal)
+    return any(
+        signal in signals or {f'Pen{owner}NewRoot', f'Pen{owner}NewTip'} <= signals
+        for signals in zones.values()
+        for owner, signal in (('Self', 'PenSelf'), ('Others', 'PenOthers'))
+    )
 
 
 def sps_osc_bindings(trigger_type, zone_id):

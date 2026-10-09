@@ -17,7 +17,7 @@ import qrcode
 from loguru import logger
 
 from srv import WAVEFORM_NAMES_BY_DEVICE
-from srv.config_manager import validate_config
+from srv.config_manager import TRIGGER_SWITCH_FIELDS, default_trigger_switches, validate_config
 from srv.sps_depth import SPS_PLUG, SPS_SOCKET, SPSZone
 from srv.steamvr_autostart import SteamVRAutoStartError, configure_steamvr_autostart
 
@@ -535,41 +535,50 @@ class DesktopApplication:
 
     def _build_device_channel(self, device_kind, channel, x, y, panel):
         lower = channel.lower()
+        basic_channel = self.basic_settings['dglab3'][device_kind][f'channel_{lower}']
+        switches = default_trigger_switches(device_kind)
+        switches.update({field: basic_channel[field] for field in switches if field in basic_channel})
         self._create('BUTTON', f'{channel} 通道', BS_GROUPBOX, x, y, 575, 240, panel=panel)
-        self._label('Socket', x + 18, y + 28, 60, 28, panel=panel)
+        self._check(f'socket_enabled_{device_kind}_{lower}', 'Socket', switches['socket_enabled'],
+                    x + 18, y + 24, 80, panel=panel)
         self._combo(
             f'zone_{device_kind}_{lower}_{SPS_SOCKET}', [''], '',
-            x + 80, y + 24, 185, panel=panel,
+            x + 100, y + 24, 165, panel=panel,
         )
         self._populate_zone_combo(device_kind, channel, SPS_SOCKET)
-        self._label('Plug', x + 282, y + 28, 50, 28, panel=panel)
+        self._check(f'plug_enabled_{device_kind}_{lower}', 'Plug', switches['plug_enabled'],
+                    x + 282, y + 24, 65, panel=panel)
         self._combo(
             f'zone_{device_kind}_{lower}_{SPS_PLUG}', [''], '',
-            x + 332, y + 24, 225, panel=panel,
+            x + 350, y + 24, 207, panel=panel,
         )
         self._populate_zone_combo(device_kind, channel, SPS_PLUG)
+        self._check(f'pcs_enabled_{device_kind}_{lower}', '监听 PCS（无有效参数时切换）',
+                    switches['pcs_enabled'], x + 18, y + 62, 270, panel=panel)
+        self._check(f'lms_enabled_{device_kind}_{lower}', '监听 LMS（无吸附时切换）',
+                    switches['lms_enabled'], x + 300, y + 62, 257, panel=panel)
         config = self.settings['dglab3'][device_kind][f'channel_{lower}']
         selected_waveform = config['depth']['waveform']
         waveforms = WAVEFORM_NAMES_BY_DEVICE[device_kind]
-        self._label('波形', x + 18, y + 70, 50, 28, panel=panel)
+        self._label('波形', x + 18, y + 106, 50, 28, panel=panel)
         self._combo(
             f'waveform_{device_kind}_{lower}', waveforms, selected_waveform,
-            x + 68, y + 66, 180, panel=panel,
+            x + 68, y + 102, 180, panel=panel,
         )
-        self._label('上限', x + 265, y + 70, 45, 28, panel=panel)
+        self._label('上限', x + 265, y + 106, 45, 28, panel=panel)
         self._edit(
             f'{device_kind}_strength_{lower}',
             self.basic_settings['dglab3'][device_kind][f'channel_{lower}']['strength_limit'],
-            x + 310, y + 66, 60, 28, panel=panel,
+            x + 310, y + 102, 60, 28, panel=panel,
         )
         extra = self.basic_settings['dglab3'][device_kind][f'channel_{lower}']['extra_parameters']
         self._check(
             f'extra_enabled_{device_kind}_{lower}', '参数 / 地图事件', extra['enabled'],
-            x + 392, y + 64, 150, panel=panel,
+            x + 392, y + 100, 165, panel=panel,
         )
         self._edit(
             f'extra_paths_{device_kind}_{lower}', '\r\n'.join(extra['paths']),
-            x + 18, y + 108, 539, 112, multiline=True, panel=panel,
+            x + 18, y + 140, 539, 82, multiline=True, panel=panel,
         )
 
     def _build_debug_panel(self):
@@ -653,6 +662,8 @@ class DesktopApplication:
             for channel in ('A', 'B'):
                 lower = channel.lower()
                 basic_channel = basic['dglab3'][device_kind][f'channel_{lower}']
+                for field in TRIGGER_SWITCH_FIELDS:
+                    basic_channel[field] = self._is_checked(f'{field}_{device_kind}_{lower}')
                 basic_channel['socket_zone'] = self._zone_id_from_combo(
                     device_kind, channel, SPS_SOCKET,
                 )
@@ -837,6 +848,8 @@ class DesktopApplication:
                 mode = {
                     SPS_SOCKET: 'Socket', SPS_PLUG: 'Plug', 'extra': '额外参数',
                     'map': '地图事件',
+                    'lms': 'LMS distance',
+                    'pcs': 'PCS distance',
                 }.get(trigger_type, '—')
                 detail = info.get('active_zone') or info.get('parameter') or '—'
                 prefix = f'debug_{device_kind}_{channel}'

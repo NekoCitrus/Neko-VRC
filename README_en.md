@@ -52,15 +52,27 @@ Coyote and Opossum share one DG-LAB 4 APP Socket V4 connection, but the APP repo
 
 ## Strength calculation
 
-Each device channel calculates all three inputs:
+Each device channel has five independent source checkboxes. Only checked sources contribute to the maximum:
 
 - **SPS Socket penetration:** estimates depth from the selected `OGB/Orf/<zone>` Root/Tip values using the OGB algorithm.
 - **SPS Plug penetration:** reads `PenSelf/PenOthers` from the selected `OGB/Pen/<zone>`.
 - **Extra parameters:** maps values through the legacy distance formula (default range `0..1`) and expires them after 0.5 seconds without an update.
+- **PCS:** uses `/avatar/parameters/pcs/contact/proximity` as a distance fallback when valid Socket depth parameters are unavailable.
+- **LMS:** uses `/avatar/parameters/lms/contact/proximity` as a distance fallback when the selected Plug depth is zero.
+
+Socket, Plug, and extra parameters/map events default to enabled for all channels. PCS defaults to enabled for Coyote A/B and disabled for Opossum A/B; LMS defaults to disabled for Coyote A/B and enabled for Opossum A/B.
 
 The maximum current value wins and linearly scales that device channel's waveform amplitude. There is no manual trigger-mode selector.
 
 Socket and Plug can each target one named zone or **any currently active** zone. The application discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar and SPS parameter tree; `/avatar/change` only requests an immediate refresh.
+
+Your own Socket and Plug interactions are included automatically: the maximum of `Self` and `Others` wins. Enable `Avatar Self Interact` in VRChat and ensure the avatar outputs the corresponding OGB self-contact depth parameters. Attraction without a depth signal does not trigger output. See the [OGB setup guide](https://github.com/OscToys/osc.toys/blob/main/docs/20-getting-started.mdx).
+
+When LMS is checked, all selected Plug depths (`PenSelf/PenOthers`) must be zero for LMS to contribute. Its value is mapped through the channel's distance range (default `0..1`). Any positive Plug depth blocks LMS. Coyote can also enable LMS manually.
+
+When PCS is checked, it contributes only when no valid Socket depth parameters match the selected zone. Valid numeric parameters are a same-zone, same-owner Root/Tip pair or a legacy `PenSelf/PenOthers` depth. Zero depth does not enable PCS. Availability is determined from the live OSCQuery inventory and received Socket signals and is rechecked after avatar, parameter, or zone changes.
+
+PCS and LMS are controlled by their own checkboxes, not the extra-parameter/map switch, and expire after 0.5 seconds without updates. Disabling Socket or Plug removes its strength contribution but preserves observations needed for the PCS/LMS guards. Save and apply clears old trigger values without reconnecting the APP.
 
 ## Configuration File Reference
 

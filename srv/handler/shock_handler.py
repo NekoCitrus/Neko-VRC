@@ -5,15 +5,21 @@ import time
 from loguru import logger
 
 from srv import WAVEFORM_NAMES_BY_DEVICE
+from ..config_manager import default_trigger_switches
 
 from .base_handler import BaseHandler
 from ..connector.coyotev3ws import DGConnection
-from ..sps_depth import SPSDepthCalculator, SPS_PLUG, SPS_SOCKET, sps_osc_bindings
+from ..sps_depth import (
+    LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS, OGB_PARAMETER_PREFIX,
+    SPSDepthCalculator, SPS_PLUG, SPS_SOCKET, has_socket_depth_parameters, sps_osc_bindings,
+)
 from ..waveform import frame_amplitudes, load_waveform_frames, scale_coyote_frame
 
 
 SOURCE_EXTRA = 'extra'
 SOURCE_MAP = 'map'
+SOURCE_LMS = 'lms'
+SOURCE_PCS = 'pcs'
 EXTRA_PARAMETER_TIMEOUT = 0.5
 
 
@@ -36,6 +42,9 @@ class ShockHandler(BaseHandler):
         self.calculators = {}
         self.calculator_inputs = {}
         self.extra_values = {}
+        self.lms_value = None
+        self.pcs_value = None
+        self.avatar_parameter_paths = None
         self.map_event_until = 0.0
         self.current_mode = 'none'
         self.active_source = ''
@@ -57,6 +66,8 @@ class ShockHandler(BaseHandler):
         self.socket_zone = channel_settings['socket_zone']
         self.plug_zone = channel_settings['plug_zone']
         self.extra_config = channel_settings['extra_parameters']
+        for field, default in default_trigger_switches(self.device_kind).items():
+            setattr(self, field, channel_settings.get(field, default))
         self.depth_config = channel_settings['depth']
         default_waveform = WAVEFORM_NAMES_BY_DEVICE[self.device_kind][0]
         self.waveform = self.depth_config.get('waveform', default_waveform)
@@ -65,9 +76,12 @@ class ShockHandler(BaseHandler):
 
     def osc_bindings(self):
         bindings = []
-        for trigger_type, zone in (
-            (SPS_SOCKET, self.socket_zone), (SPS_PLUG, self.plug_zone),
+        for trigger_type, zone, needed in (
+            (SPS_SOCKET, self.socket_zone, self.socket_enabled or self.pcs_enabled),
+            (SPS_PLUG, self.plug_zone, self.plug_enabled or self.lms_enabled),
         ):
+            if not needed:
+                continue
             bindings.extend(
                 (address, (trigger_type, signal))
                 for address, signal in sps_osc_bindings(trigger_type, zone)
@@ -75,7 +89,12 @@ class ShockHandler(BaseHandler):
         if self.extra_config['enabled']:
             bindings.extend(
                 (path, (SOURCE_EXTRA, 'value')) for path in self.extra_config['paths']
+                if path not in (LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS)
             )
+        if self.pcs_enabled:
+            bindings.append((PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value')))
+        if self.lms_enabled:
+            bindings.append((LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value')))
         return tuple(bindings)
 
     def set_chatbox_manager(self, chatbox_manager):
@@ -97,7 +116,43 @@ class ShockHandler(BaseHandler):
             'raw_value': self.last_raw_value,
             'sent_frame': self.last_sent_frame,
             'sent_strengths': self.last_sent_strengths,
+            'socket_depth_available': self.socket_depth_available,
+            'enabled_sources': {
+                'socket': self.socket_enabled, 'plug': self.plug_enabled,
+                'extra_map': self.extra_config['enabled'],
+                'pcs': self.pcs_enabled, 'lms': self.lms_enabled,
+            },
         }
+
+    @property
+    def socket_depth_available(self):
+        paths = set(self.avatar_parameter_paths or ())
+        # Actual validated OSC messages are also evidence, even before discovery
+        # completes or if an avatar unlocks between OSCQuery polls.
+        for (trigger_type, zone), calculator in self.calculators.items():
+            if trigger_type == SPS_SOCKET:
+                paths.update(f'{OGB_PARAMETER_PREFIX}Orf/{zone}/{signal}'
+                             for signal in calculator.values)
+        return has_socket_depth_parameters(paths, self.socket_zone)
+
+    def set_avatar_parameters(self, parameter_paths):
+        paths = None if parameter_paths is None else frozenset(parameter_paths)
+        if paths == self.avatar_parameter_paths:
+            return
+        self.avatar_parameter_paths = paths
+        self.pcs_value = None
+        if paths is not None:
+            for key, calculator in tuple(self.calculators.items()):
+                trigger_type, zone = key
+                if trigger_type == SPS_SOCKET and any(
+                    f'{OGB_PARAMETER_PREFIX}Orf/{zone}/{signal}' not in paths
+                    for signal in calculator.values
+                ):
+                    self.calculators.pop(key)
+                    self.calculator_inputs.pop(key, None)
+        winner = self._winner()
+        self._set_winner(winner)
+        self._track_task(self._apply_current_winner())
 
     def start_background_jobs(self):
         self._track_task(self.clear_check())
@@ -137,16 +192,36 @@ class ShockHandler(BaseHandler):
             logger.warning(f'通道 {self.channel} 忽略无效 OSC 参数 {address}: {exc}')
             return None
         raw_value = float(value)
-        if source == SOURCE_EXTRA:
+        if address == PCS_PROXIMITY_ADDRESS:
+            if not self.pcs_enabled:
+                return None
+            self.pcs_value = (
+                self._distance_depth(raw_value),
+                time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
+            )
+        elif address == LMS_PROXIMITY_ADDRESS:
+            if not self.lms_enabled:
+                return None
+            # Route even overlapping user wildcard bindings through this gate.
+            self.lms_value = (
+                self._distance_depth(raw_value),
+                time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
+            )
+        elif source in (SOURCE_LMS, SOURCE_PCS):
+            return None
+        elif source == SOURCE_EXTRA:
             if not self.extra_config['enabled']:
                 return None
-            bottom = float(self.extra_config['bottom'])
-            top = float(self.extra_config['top'])
-            depth = min(max((raw_value - bottom) / (top - bottom), 0.0), 1.0)
+            if ((address.startswith(f'{OGB_PARAMETER_PREFIX}Orf/') and not self.socket_enabled)
+                    or (address.startswith(f'{OGB_PARAMETER_PREFIX}Pen/') and not self.plug_enabled)):
+                return None
             self.extra_values[address] = (
-                depth, time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
+                self._distance_depth(raw_value), time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
             )
         else:
+            if ((source == SPS_SOCKET and not (self.socket_enabled or self.pcs_enabled))
+                    or (source == SPS_PLUG and not (self.plug_enabled or self.lms_enabled))):
+                return None
             parts = address.split('/')
             if len(parts) < 7:
                 logger.warning(f'Channel {self.channel} ignored malformed SPS address: {address}')
@@ -159,8 +234,13 @@ class ShockHandler(BaseHandler):
             self.calculator_inputs[(source, zone)] = (address, raw_value)
         winner = self._winner()
         self._set_winner(winner)
-        self._track_task(self.handler_depth(winner[0]))
+        self._track_task(self._apply_current_winner())
         return None
+
+    def _distance_depth(self, raw_value):
+        bottom = float(self.extra_config['bottom'])
+        top = float(self.extra_config['top'])
+        return min(max((raw_value - bottom) / (top - bottom), 0.0), 1.0)
 
     def _winner(self, now=None):
         now = time.monotonic() if now is None else now
@@ -168,6 +248,9 @@ class ShockHandler(BaseHandler):
         if self.extra_config['enabled'] and self.map_event_until > now:
             candidates.append((1.0, SOURCE_MAP, '', '地图事件', 1.0))
         for (trigger_type, zone), calculator in self.calculators.items():
+            if ((trigger_type == SPS_SOCKET and not self.socket_enabled)
+                    or (trigger_type == SPS_PLUG and not self.plug_enabled)):
+                continue
             address, raw_value = self.calculator_inputs.get(
                 (trigger_type, zone), ('', 0.0),
             )
@@ -175,9 +258,29 @@ class ShockHandler(BaseHandler):
         candidates.extend(
             (depth, SOURCE_EXTRA, '', address, raw_value)
             for address, (depth, expiry, raw_value) in self.extra_values.items()
-            if expiry > now
+            if self.extra_config['enabled'] and expiry > now
         )
+        plug_active = any(
+            calculator.depth > 0
+            for (trigger_type, _zone), calculator in self.calculators.items()
+            if trigger_type == SPS_PLUG
+        )
+        if self.lms_enabled and not plug_active and self.lms_value is not None:
+            depth, expiry, raw_value = self.lms_value
+            if expiry > now:
+                candidates.append((depth, SOURCE_LMS, '', LMS_PROXIMITY_ADDRESS, raw_value))
+        if self.pcs_enabled and not self.socket_depth_available and self.pcs_value is not None:
+            depth, expiry, raw_value = self.pcs_value
+            if expiry > now:
+                candidates.append((depth, SOURCE_PCS, '', PCS_PROXIMITY_ADDRESS, raw_value))
         return max(candidates, key=lambda item: item[0]) if candidates else (0.0, '', '', '', 0.0)
+
+    async def _apply_current_winner(self):
+        # A queued OSC update can run after hot reconfiguration. Never replay
+        # its captured strength; evaluate the current switches/inputs instead.
+        winner = self._winner()
+        self._set_winner(winner)
+        await self.handler_depth(winner[0])
 
     async def trigger_map_event(self, seconds):
         """Use the channel's shared extra/map switch and normal output feeder."""
@@ -205,6 +308,8 @@ class ShockHandler(BaseHandler):
         self.calculators.clear()
         self.calculator_inputs.clear()
         self.extra_values.clear()
+        self.lms_value = None
+        self.pcs_value = None
         self.map_event_until = 0.0
         self._load_settings(channel_settings)
         self._set_winner((0.0, '', '', '', 0.0))
@@ -214,9 +319,12 @@ class ShockHandler(BaseHandler):
         self.calculators.clear()
         self.calculator_inputs.clear()
         self.extra_values.clear()
+        self.lms_value = None
+        self.pcs_value = None
+        self.avatar_parameter_paths = None
         self.map_event_until = 0.0
         self._set_winner((0.0, '', '', '', 0.0))
-        self._track_task(self.handler_depth(0.0))
+        self._track_task(self._apply_current_winner())
 
     def _emit_debug_event(self):
         if self.event_callback is None:
@@ -255,9 +363,15 @@ class ShockHandler(BaseHandler):
                 if expiry <= now
             ]
             map_expired = bool(self.map_event_until and self.map_event_until <= now)
+            lms_expired = self.lms_value is not None and self.lms_value[1] <= now
+            if lms_expired:
+                self.lms_value = None
+            pcs_expired = self.pcs_value is not None and self.pcs_value[1] <= now
+            if pcs_expired:
+                self.pcs_value = None
             if map_expired:
                 self.map_event_until = 0.0
-            if expired or map_expired:
+            if expired or map_expired or lms_expired or pcs_expired:
                 for address in expired:
                     self.extra_values.pop(address, None)
                 winner = self._winner(now)

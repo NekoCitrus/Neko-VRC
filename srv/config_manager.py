@@ -23,10 +23,22 @@ DEFAULT_EXTRA_PARAMETERS = (
     '/avatar/parameters/Shock/wildcard/*',
 )
 
+TRIGGER_SWITCH_FIELDS = ('socket_enabled', 'plug_enabled', 'pcs_enabled', 'lms_enabled')
+
+
+def default_trigger_switches(device_kind):
+    return {
+        'socket_enabled': True,
+        'plug_enabled': True,
+        'pcs_enabled': device_kind == 'coyote',
+        'lms_enabled': device_kind == 'opossum',
+    }
+
 DEFAULT_BASIC_SETTINGS = {
     'dglab3': {
         device_kind: {
             'channel_a': {
+                **default_trigger_switches(device_kind),
                 'socket_zone': '*',
                 'plug_zone': '*',
                 'extra_parameters': {
@@ -38,6 +50,7 @@ DEFAULT_BASIC_SETTINGS = {
                 'strength_limit': 100,
             },
             'channel_b': {
+                **default_trigger_switches(device_kind),
                 'socket_zone': '*',
                 'plug_zone': '*',
                 'extra_parameters': {
@@ -139,6 +152,8 @@ def apply_basic_settings(settings, basic_settings):
             runtime_channel['plug_zone'] = basic_channel['plug_zone']
             runtime_channel['extra_parameters'] = copy.deepcopy(basic_channel['extra_parameters'])
             runtime_channel['strength_limit'] = basic_channel['strength_limit']
+            for field, default in default_trigger_switches(device_kind).items():
+                runtime_channel[field] = basic_channel.get(field, default)
     return runtime
 
 
@@ -155,6 +170,9 @@ def migrate_sps_schema(settings, basic_settings):
             device_basic = old_basic_root.get(device_kind, {}).get(channel_name, {})
             old_basic = device_basic if isinstance(device_basic, dict) and device_basic else shared_basic
             new_basic = migrated_basic['dglab3'][device_kind][channel_name]
+            for field in TRIGGER_SWITCH_FIELDS:
+                if field in old_basic:
+                    new_basic[field] = old_basic[field]
 
             strength_limit = old_basic.get('strength_limit')
             if not isinstance(strength_limit, int) and isinstance(shared_basic, dict):
@@ -284,6 +302,9 @@ def validate_config(settings, basic_settings):
         for channel_name in ('channel_a', 'channel_b'):
             basic_channel = basic_settings['dglab3'][device_kind][channel_name]
             path = f'{device_kind}.{channel_name}'
+            for field, default in default_trigger_switches(device_kind).items():
+                if not isinstance(basic_channel.get(field, default), bool):
+                    raise ValueError(f'{path}.{field} 必须是布尔值。')
             limit = basic_channel['strength_limit']
             if not isinstance(limit, int) or not 0 <= limit <= 200:
                 raise ValueError(f'{path}.strength_limit 必须是 0~200 之间的整数。')
