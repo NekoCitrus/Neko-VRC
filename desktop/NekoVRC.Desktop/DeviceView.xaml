@@ -1,0 +1,57 @@
+<UserControl x:Class="NekoVRC.Desktop.DeviceView"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Grid Margin="0,0,0,8">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <TextBlock Text="{Binding Name}" FontSize="26"/>
+   <TextBlock Grid.Column="1" Text="{Binding Status}" HorizontalAlignment="Right" Margin="12,0,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}"/>
+  </Grid>
+  <Border Grid.Row="1" Background="{StaticResource Panel}" CornerRadius="8" Padding="12" Margin="0,0,0,8">
+   <StackPanel>
+    <Grid>
+     <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <ComboBox ItemsSource="{Binding ConnectionModes}" SelectedItem="{Binding Mode}" Margin="0,0,12,0"/>
+     <ComboBox Grid.Column="1" ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}" DisplayMemberPath="Label" ToolTip="{Binding Address}"/>
+    </Grid>
+    <WrapPanel Margin="0,8,0,0">
+     <Button Content="扫描蓝牙" Command="{Binding ScanCommand}" Padding="12,6" Margin="0,0,8,0"/>
+     <Button Content="连接" Command="{Binding ConnectCommand}" Padding="12,6" Margin="0,0,8,0"/>
+     <Button Content="断开蓝牙" Command="{Binding DisconnectCommand}" Padding="12,6" Margin="0,0,8,0"/>
+     <Button Content="App 扫码" Command="{Binding DataContext.QrCommand, RelativeSource={RelativeSource AncestorType=Window}}" Padding="12,6" Margin="0"/>
+    </WrapPanel>
+   </StackPanel>
+  </Border>
+  <ItemsControl Grid.Row="2" ItemsSource="{Binding Channels}">
+   <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+   <ItemsControl.ItemTemplate><DataTemplate>
+    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="12,10" Margin="0,0,0,8">
+     <StackPanel>
+      <TextBlock Text="{Binding Name}" FontSize="20" Margin="0,0,0,6"/>
+      <Grid>
+       <Grid.ColumnDefinitions><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="76"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+       <CheckBox Content="Socket" IsChecked="{Binding SocketEnabled}" Margin="0"/>
+       <ComboBox Grid.Column="1" ItemsSource="{Binding SocketZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding SocketZone}"/>
+       <CheckBox Grid.Column="3" Content="Plug" IsChecked="{Binding PlugEnabled}" Margin="0"/>
+       <ComboBox Grid.Column="4" ItemsSource="{Binding PlugZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding PlugZone}"/>
+      </Grid>
+      <WrapPanel Margin="0,6,0,6">
+       <CheckBox Content="PCS 回退" ToolTip="无有效 Socket 深度参数时，使用 pcs/contact/proximity。" IsChecked="{Binding PcsEnabled}" Margin="0,0,18,0"/>
+       <CheckBox Content="LMS 回退" ToolTip="Plug 深度为 0 时，使用 lms/contact/proximity。" IsChecked="{Binding LmsEnabled}" Margin="0,0,18,0"/>
+       <CheckBox Content="参数 / 地图事件" IsChecked="{Binding ExtraEnabled}" Margin="0"/>
+      </WrapPanel>
+      <Grid Margin="0,0,0,6">
+       <Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="44"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
+       <TextBlock Text="波形"/>
+       <ComboBox Grid.Column="1" ItemsSource="{Binding Waveforms}" SelectedItem="{Binding Waveform}"/>
+       <TextBlock Grid.Column="3" Text="上限"/>
+       <TextBox Grid.Column="4" Text="{Binding Limit, UpdateSourceTrigger=PropertyChanged}"/>
+      </Grid>
+      <TextBox Text="{Binding ExtraPaths, UpdateSourceTrigger=PropertyChanged}" ToolTip="额外参数，每行一个；支持 * 通配符。" AcceptsReturn="True" Height="56" Padding="6,3" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+     </StackPanel>
+    </Border>
+   </DataTemplate></ItemsControl.ItemTemplate>
+  </ItemsControl>
+ </Grid>
+</UserControl>

@@ -1,4 +1,4 @@
-# Neko-VRC
+﻿# Neko-VRC
 
 | General | Coyote A/B | Opossum A/B | Runtime Debug | Copyright |
 |---|---|---|---|---|
@@ -16,10 +16,10 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 ## Usage
 
 1. Go to [Project Releases](https://github.com/NekoCitrus/Neko-VRC/releases) to download the latest Neko-VRC build.
-2. Run the exe. The lightweight desktop window opens and starts the background services automatically.
+2. Extract the complete package and run `Neko-VRC.exe`. The WPF UI uses a black background and `#FAE687` text; Python and .NET runtimes are bundled.
 3. Under **Coyote A/B** and **Opossum A/B**, configure Socket, Plug, extra parameters, waveform, and strength limit for each channel.
 4. Select **Save and apply**. The existing APP connection stays connected.
-5. Connect the Coyote or Opossum to DG-LAB 4 APP over Bluetooth, open Socket control, and scan the QR code.
+5. Select **App** or **Bluetooth direct** separately for each device kind. App mode uses the existing Socket QR connection. For direct mode, release the phone's Bluetooth connection, scan, select a host, and connect.
 6. If background operation is enabled, closing the window hides it to the real Windows notification area. Use the tray menu to reopen or exit.
 
 ## Desktop UI
@@ -27,10 +27,12 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 - **General:** Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
 - **Coyote A/B:** independent sources, official Coyote waveform, and strength limit for each channel.
 - **Opossum A/B:** independent sources, official Opossum waveform, and strength limit for each channel.
-- **Runtime Debug:** winning source, active zone or parameter, depth, and the four amplitude samples most recently sent to the App.
+- **Runtime Debug:** source, trigger ratio, sent waveform amplitudes, effective cap, device feedback, and Bluetooth battery status.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
 Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
+
+Each device kind has exactly one selected output route. App/Bluetooth mixed operation is supported; direct mode connects one host per kind. Saving channel settings preserves connections; changing route or address clears the old output and requires a new manual Bluetooth connection. Emergency stop is latched until Resume. A lost radio link cannot guarantee delivery of a zero command; use the host's physical stop controls.
 
 ### Start with SteamVR
 
@@ -41,14 +43,20 @@ This feature does not use Windows login startup and does not launch or poll for 
 ## Configuration location
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v0.9.yaml
+%APPDATA%\ShockingVRChat\settings-v2.0.yaml
 ```
 
-The log is stored as `neko-vrc.log` in the same directory. The legacy `%APPDATA%\ShockingVRChat` directory is retained for upgrade compatibility. v0.9 migrates older settings automatically.
+The log is stored as `neko-vrc.log` in the same directory. The legacy `%APPDATA%\ShockingVRChat` directory is retained for upgrade compatibility. v2.0 migrates older settings automatically.
 
 ## Device control
 
-Coyote and Opossum share one DG-LAB 4 APP Socket V4 connection, but the APP reports every host as an independent `slotId`. The application keeps each `COYOTE_020` / `COYOTE_030` and `OVC_1` slot separate, calculates its strength independently, and sends operations to the matching slot. Opossum waveforms are normalized to the OVC fixed prefix and four vibration-amplitude bytes. See the official [dglab-kit](https://github.com/dungeonlab-open/dglab-kit).
+Direct BLE has separate encoders for Coyote 2.0, Coyote 3.0, and Opossum V1. Coyote 3.0 rewrites BF soft caps on connection and cap updates. Opossum keeps B3 channel strength separate from B0 waveform amplitudes. Trigger ratios modulate waveforms, not configured caps. V2 only holds one XYZ group per 100ms, so V3 library frames are averaged and will not feel identical. Opossum screen B2 synchronization is skipped if negotiated MTU cannot hold the official packet; commands are never arbitrarily split. Hardware compatibility still requires real-device testing.
+
+Official protocols: [Coyote V2](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v2/README.md), [Coyote V3](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v3/README.md), [Opossum](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/opossum-vibrate-controller/README.md).
+
+Build with .NET 10 SDK and `requirements-build.txt`, then run `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`. Distribute the whole `dist/Neko-VRC-WPF/` directory. For source runs, build `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj` before launching `neko_vrc.py`. `--legacy-ui` explicitly selects the old Win32 UI.
+
+In App mode, Coyote and Opossum share a DG-LAB 4 APP Socket V4 connection with independent host `slotId` values. Operations are routed according to each device kind's selected connection. Opossum waveforms are normalized to the OVC fixed prefix and four vibration-amplitude bytes. See the official [dglab-kit](https://github.com/dungeonlab-open/dglab-kit).
 
 ## Strength calculation
 
@@ -76,12 +84,12 @@ PCS and LMS are controlled by their own checkboxes, not the extra-parameter/map 
 
 ## Configuration File Reference
 
-The configuration format is YAML, version `v0.9`. Coyote and Opossum A/B settings are independent under `channels.dglab3.coyote` and `channels.dglab3.opossum`.
+The configuration format is YAML, version `v2.0`. Coyote and Opossum A/B settings are independent under `channels.dglab3.coyote` and `channels.dglab3.opossum`.
 
 ```yaml
-version: v0.9
+version: v2.0
 channels:
-  version: v0.9
+  version: v2.0
   dglab3:
     coyote:
       channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
@@ -90,7 +98,7 @@ channels:
       channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
       channel_b: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
 settings:
-  version: v0.9
+  version: v2.0
   osc:
     listen_host: 127.0.0.1
     listen_port: 9001
@@ -146,7 +154,7 @@ ws: # WebSocket service configuration
 
 ### Chatbox and control API settings
 
-Missing options are added automatically to the unified v0.8 configuration:
+Missing options are added automatically to the unified v2.0 configuration:
 
 ```yaml
 chatbox:

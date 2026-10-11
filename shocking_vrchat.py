@@ -34,6 +34,7 @@ from srv.config_manager import (
 )
 from srv.connector.coyotev3ws import DGConnection
 from srv.connector.coyotev4ws import DGV4Connection
+from srv.device_router import DeviceRouter
 from srv.handler.machine_handler import TuYaConnection, TuyaHandler
 from srv.handler.shock_handler import ShockHandler
 from srv.oscquery import OSCQueryAvatarSnapshot, OSCQueryService
@@ -243,22 +244,28 @@ def build_status_response():
         if getattr(connection, 'is_device_ready', lambda: True)()
     )
     device_entries = []
-    for connection in connections:
-        for state in connection_device_states(connection):
-            device_entries.append({
-                'type': 'shock',
-                'device': {
-                    'COYOTE_020': 'coyotev2',
-                    'COYOTE_030': 'coyotev3',
-                    'OVC_1': 'opossum',
-                }.get(state['device_type'], 'coyotev3'),
-                'attr': {
-                    'strength': dict(state['strength']),
-                    'upper_strength': dict(state.get('upper_strength', state['strength'])),
-                    'uuid': connection.uuid,
-                    'slot_id': state['slot_id'],
-                },
-            })
+    runtime = getattr(ACTIVE_CONTROLLER, 'runtime', None)
+    router = getattr(runtime, 'router', None)
+    state_connections = (
+        [(state, state.get('connection_uuid', state['slot_id'])) for state in router.device_states()]
+        if router is not None else
+        [(state, connection.uuid) for connection in connections for state in connection_device_states(connection)]
+    )
+    for state, connection_uuid in state_connections:
+        device_entries.append({
+            'type': 'shock',
+            'device': {
+                'COYOTE_020': 'coyotev2',
+                'COYOTE_030': 'coyotev3',
+                'OVC_1': 'opossum',
+            }.get(state['device_type'], 'coyotev3'),
+            'attr': {
+                'strength': dict(state['strength']),
+                'upper_strength': dict(state.get('upper_strength', state['strength'])),
+                'uuid': connection_uuid,
+                'slot_id': state['slot_id'],
+            },
+        })
     return {
         'healthy': 'ok',
         'service': ACTIVE_CONTROLLER.state if ACTIVE_CONTROLLER else 'stopped',
@@ -402,6 +409,7 @@ class DeviceRuntime:
         self.oscquery = None
         self.current_avatar_id = ''
         self.current_avatar_endpoint = ''
+        self.router = DeviceRouter(settings)
 
     def _emit(self, event):
         if self.event_callback is not None:
@@ -418,7 +426,7 @@ class DeviceRuntime:
             for channel in ('A', 'B'):
                 handler = ShockHandler(
                     SETTINGS=self.settings,
-                    DG_CONN=DGConnection,
+                    DG_CONN=self.router,
                     channel_name=channel,
                     device_kind=device_kind,
                     event_callback=self._emit,
@@ -446,6 +454,11 @@ class DeviceRuntime:
 
     async def _apply_settings(self, settings):
         old_chatbox = self.chatbox_manager
+        # Stop the OLD route before changing its selection. Keep App and OSC
+        # sockets intact while clearing pending samples in both transports.
+        for kind in ('coyote', 'opossum'):
+            for channel in ('A', 'B'):
+                await self.router.broadcast_clear_wave(channel, kind)
         for handler in self.handlers:
             if not isinstance(handler, ShockHandler):
                 continue
@@ -468,6 +481,7 @@ class DeviceRuntime:
             apply_connection_settings = getattr(connection, 'apply_settings', None)
             if apply_connection_settings is not None:
                 await apply_connection_settings(settings)
+        await self.router.apply_settings(settings)
         if self.oscquery is not None:
             self.oscquery.settings = settings
         if old_chatbox is not None:
@@ -478,6 +492,36 @@ class DeviceRuntime:
             raise RuntimeError('后台服务未运行。')
         future = asyncio.run_coroutine_threadsafe(self._apply_settings(settings), self.loop)
         future.result(timeout=timeout)
+
+    async def _device_action(self, action, kind=None):
+        if action in ('connect', 'resume'):
+            for handler in self.handlers:
+                if isinstance(handler, ShockHandler) and (kind is None or handler.device_kind == kind):
+                    handler.reset_for_avatar_change()
+        if action == 'connect':
+            await self.router.connect(kind)
+        elif action == 'disconnect':
+            await self.router.disconnect(kind)
+        elif action == 'scan':
+            return await self.router.scan()
+        elif action == 'stop':
+            await self.router.emergency_stop()
+        elif action == 'resume':
+            self.router.paused = False
+        else:
+            raise ValueError('未知设备操作。')
+
+    def device_action(self, action, kind=None, timeout=25):
+        if kind is not None and kind not in ('coyote', 'opossum'):
+            raise ValueError('未知设备。')
+        if not self.loop or not self.loop.is_running():
+            raise RuntimeError('后台服务未运行。')
+        future = asyncio.run_coroutine_threadsafe(self._device_action(action, kind), self.loop)
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            raise RuntimeError('设备操作超时，已取消。') from None
 
     def _avatar_change_handler(self, _address, *args):
         if len(args) != 1 or not isinstance(args[0], str):
@@ -680,6 +724,11 @@ class DeviceRuntime:
             if chatbox_task is not None:
                 chatbox_task.cancel()
                 await asyncio.gather(chatbox_task, return_exceptions=True)
+            try:
+                await self.router.emergency_stop()
+            except Exception as exc:
+                logger.warning('服务退出时归零未确认：{}', exc)
+            await self.router.close()
             for handler in self.handlers:
                 stop = getattr(handler, 'stop_background_jobs', None)
                 if stop:
@@ -721,12 +770,21 @@ class DeviceRuntime:
             connection
             and getattr(connection, 'is_device_ready', lambda: True)()
         )
-        device_states = connection_device_states(connection) if device_ready else ()
+        device_states = self.router.device_states()
+        device_ready = bool(device_states)
         device_channels = {'coyote': {}, 'opossum': {}}
         for handler in self.handlers:
             if not isinstance(handler, ShockHandler):
                 continue
             info = handler.get_mode_info()
+            host = self.router.hosts.get(handler.device_kind)
+            if self.router.config(handler.device_kind)['mode'] == 'bluetooth':
+                from srv.waveform import frame_amplitudes
+                frame = host.sent_frames[handler.channel] if host and host.connected else '0A0A0A0A00000000'
+                info['sent_frame'] = frame
+                info['sent_strengths'] = frame_amplitudes(frame)
+            if self.router.paused:
+                info['sent_strengths'] = (0, 0, 0, 0)
             device_strengths = []
             for state in device_states:
                 if state['device_kind'] != handler.device_kind:
@@ -750,12 +808,13 @@ class DeviceRuntime:
             'connected': device_ready,
             'app_connected': connection is not None,
             'protocol': getattr(connection, 'protocol_version', '') if connection else '',
+            'output_paused': self.router.paused,
+            'bluetooth': {kind: host.snapshot() for kind, host in self.router.hosts.items()},
             'device_type': getattr(connection, 'device_type', '') if connection else '',
             'device_name': getattr(connection, 'device_name', '') if connection else '',
             'devices': list(device_states),
             'device_id': (
-                getattr(connection, 'slot_id', None) or connection.uuid
-                if device_ready else ''
+                device_states[0]['slot_id'] if device_ready else ''
             ),
             'relay_packets': self.relay_packets,
             'channels': channels,
@@ -888,7 +947,7 @@ def config_save():
     CONFIG_MANAGER.save(SETTINGS, SETTINGS_BASIC)
 
 
-def main():
+def legacy_main():
     import ctypes
 
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Local\\NekoVRC.SingleInstance')
@@ -907,6 +966,25 @@ def main():
     application = DesktopApplication(CONFIG_MANAGER, SETTINGS, SETTINGS_BASIC, controller)
     controller.event_callback = application.post_event
     application.run()
+
+
+def main():
+    """Launch the WPF UI; retain the old UI only as an explicit fallback."""
+    if '--legacy-ui' in sys.argv:
+        return legacy_main()
+    import os
+    import subprocess
+    executable = APP_DIR / 'Neko-VRC.exe'
+    if not executable.exists():
+        executable = APP_DIR / 'desktop' / 'NekoVRC.Desktop' / 'bin' / 'Debug' / 'net10.0-windows' / 'Neko-VRC.exe'
+    if not executable.exists():
+        raise RuntimeError('请先构建 WPF 前端，或使用完整的 Neko-VRC 发布包。')
+    environment = os.environ.copy()
+    local_sdk = APP_DIR / '.tools' / 'dotnet'
+    if local_sdk.exists():
+        environment['DOTNET_ROOT'] = str(local_sdk)
+    subprocess.Popen([str(executable)], cwd=str(APP_DIR), env=environment,
+                     creationflags=subprocess.CREATE_NO_WINDOW)
 
 
 if __name__ == '__main__':

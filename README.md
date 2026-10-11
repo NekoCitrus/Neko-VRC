@@ -1,4 +1,4 @@
-# Neko-VRC
+﻿# Neko-VRC
 [基本设置](assets/screenshots/general.png) · [郊狼 A/B](assets/screenshots/coyote.png) · [负鼠 A/B](assets/screenshots/opossum.png) · [运行调试](assets/screenshots/debug.png) · [版权信息](assets/screenshots/about.png)
 
 [English version](README_en.md)
@@ -13,21 +13,25 @@
 ## 使用方式
 
 1. 前往 [本项目 Release](https://github.com/NekoCitrus/Neko-VRC/releases) 下载最新版本的 Neko-VRC
-2. 运行 exe。程序会直接打开轻量桌面窗口并自动启动后台服务。
+2. 完整解压发布包，运行 `Neko-VRC.exe`。WPF 窗口使用黑色背景与 `#FAE687` 文字，自动启动后台服务；无需另装 Python 或 .NET。
 3. 在“郊狼 A/B”和“负鼠 A/B”中勾选各通道的触发来源，并设置部位、参数、波形和强度上限。
 4. 点击“保存并应用”。已有 APP 连接不会断开。首次联网时如弹出 Windows 防火墙提示，请选择允许。
-5. 启动最新版 DG-LAB 4 APP，在 APP 内用蓝牙连接郊狼或负鼠，再用 Socket 控制扫描程序二维码。
+5. 每类设备分别选择 **App** 或 **蓝牙直连**。App 模式使用 DG-LAB 4 APP 的 Socket 扫码；直连模式点击“扫描蓝牙”、选择主机，再点击“连接”。连接前请释放手机对该主机的蓝牙连接。
 6. 如勾选“关闭主窗口后继续在系统托盘运行”，关闭窗口不会停止服务；可从托盘菜单重新打开或退出。
 
 ## 桌面窗口
 
-- **基本设置**：编辑 Chatbox、后台运行与 SteamVR 跟随启动开关。设备由 DG-LAB 4 APP 通过 Socket V4 上报，程序通过 OSCQuery 供 VRChat 自动发现。
+- **基本设置**：Chatbox、后台运行与 SteamVR 跟随启动。程序通过 OSCQuery 供 VRChat 自动发现，无需额外分流软件。
 - **郊狼 A/B**：分别设置 Socket、Plug、额外参数、郊狼官方波形和强度上限。
 - **负鼠 A/B**：使用独立设置和负鼠官方波形。
-- **运行调试**：显示胜出来源、部位或参数、深度，以及最近发送给 APP 的四个波形强度采样值。
+- **运行调试**：显示触发来源、比例、发送波形幅值、有效上限和设备反馈；蓝牙设备还显示电量。
 - **版权信息**：显示项目、代码来源、前端贡献者与开源许可。
 
 程序当前接受一个 DG-LAB APP 连接，但会同时控制该 APP 上报的所有受支持郊狼与负鼠槽位。
+
+郊狼和负鼠可以分别选择不同的连接方式；同一类设备只向选中的连接路径输出。蓝牙模式每类设备连接一台主机，App 模式仍支持多槽位。保存通道设置不会断开现有连接；改变连接方式或蓝牙地址时，会先清除旧路径输出并断开旧蓝牙设备，需要再手动连接。
+
+“急停”停止所有输出，点击“恢复”后重新接收触发。首次连接、重连和输入过期时从零输出开始，不恢复旧波形。断线情况下无法保证归零指令到达硬件，请使用主机实体停止按钮。
 
 ### 跟随 SteamVR 启动
 
@@ -40,14 +44,22 @@
 配置固定保存在：
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v0.9.yaml
+%APPDATA%\ShockingVRChat\settings-v2.0.yaml
 ```
 
-日志保存在同目录的 `neko-vrc.log`。为兼容旧版本，配置目录继续使用 `%APPDATA%\ShockingVRChat`。首次运行 v0.9 会迁移旧配置。
+日志保存在同目录的 `neko-vrc.log`。为兼容旧版本，配置目录继续使用 `%APPDATA%\ShockingVRChat`。首次运行 v2.0 会迁移旧配置。
 
 ## 设备控制方式
 
-郊狼与负鼠都经同一条 DG-LAB 4 APP Socket V4 连接控制，但是 APP 将每台主机作为独立 `slotId` 上报。程序会同时保留所有 `COYOTE_020` / `COYOTE_030` 和 `OVC_1` 槽位，分别计算强度并按槽位发送任务。负鼠波形会自动转为 OVC 所用的固定前缀与四个振动强度字节。参见 [DG-LAB 官方 dglab-kit](https://github.com/dungeonlab-open/dglab-kit)。
+蓝牙直连支持郊狼 2.0、郊狼 3.0 和负鼠 V1，各自使用独立协议编码。3.0 在连接及上限更新时写入 BF 软上限；负鼠分别发送 B3 通道强度与 B0 振动波形。软件上限保持固定，触发比例只调制波形幅值。2.0 每 100ms 仅支持一组 XYZ，因此对 3.0 波形库做帧内平均近似，体感不保证相同。负鼠屏幕 B2 指令超过文档所列 20 字节，协商 MTU 不足时跳过屏幕同步，不拆分该指令。
+
+协议与模拟测试已覆盖；实际蓝牙兼容性、波形体感和断连行为仍需对应主机验证。官方参考：[郊狼 2.0](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v2/README.md)、[郊狼 3.0](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v3/README.md)、[负鼠](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/opossum-vibrate-controller/README.md)。
+
+App 模式下，郊狼与负鼠可经同一条 DG-LAB 4 APP Socket V4 连接控制，APP 将每台主机作为独立 `slotId` 上报。程序保留所有受支持槽位，按设备连接方式路由任务；负鼠波形转为 OVC 固定前缀与四个振动强度字节。参见 [DG-LAB 官方 dglab-kit](https://github.com/dungeonlab-open/dglab-kit)。
+
+### 源码构建
+
+准备 .NET 10 SDK 与 Python 环境，安装 `requirements-build.txt` 后运行 `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`。输出目录为 `dist/Neko-VRC-WPF/`，必须完整分发，不能只复制前端 exe。源码启动先构建 `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj`，再运行 `neko_vrc.py`；旧 Win32 界面仅保留为显式 `--legacy-ui` 回退入口。
 
 一般设置，以及郊狼/负鼠各自的 A/B 触发、部位、波形和强度上限，建议直接在窗口修改。WebSocket 或 Web 服务端口等高级选项仍可在 YAML 中修改；手动修改 YAML 后请从托盘退出程序并重新打开。
 
@@ -82,12 +94,12 @@ PCS 和 LMS 各自受对应复选框控制，不依赖“参数 / 地图事件�
 
 ## 配置文件参考
 
-配置文件格式为 YAML，当前版本为 `v0.9`。郊狼和负鼠的 A/B 设置分别位于 `channels.dglab3.coyote` 和 `channels.dglab3.opossum`。
+配置文件格式为 YAML，当前版本为 `v2.0`。郊狼和负鼠的 A/B 设置分别位于 `channels.dglab3.coyote` 和 `channels.dglab3.opossum`。
 
 ```yaml
-version: v0.9
+version: v2.0
 channels:
-  version: v0.9
+  version: v2.0
   dglab3:
     coyote:
       channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
@@ -96,7 +108,7 @@ channels:
       channel_a: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
       channel_b: {socket_zone: '*', plug_zone: '*', strength_limit: 100}
 settings:
-  version: v0.9
+  version: v2.0
   osc:
     listen_host: 127.0.0.1
     listen_port: 9001

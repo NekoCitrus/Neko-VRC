@@ -114,7 +114,7 @@ class ConfigManagerTests(unittest.TestCase):
             manager = ConfigManager(app_dir=Path(root) / 'app', config_dir=Path(root) / 'config')
             settings, basic = manager.load()
             self.assertTrue(manager.path.exists())
-            self.assertEqual(manager.path.name, 'settings-v0.9.yaml')
+            self.assertEqual(manager.path.name, 'settings-v2.0.yaml')
             self.assertIsNotNone(settings['ws']['master_uuid'])
             self.assertEqual(basic['dglab3']['coyote']['channel_a']['strength_limit'], 100)
             self.assertEqual(basic['dglab3']['opossum']['channel_a']['strength_limit'], 100)

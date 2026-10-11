@@ -989,6 +989,35 @@ class ChatboxTests(unittest.TestCase):
         self.assertEqual(osc_socket.fileno(), -1)
         self.assertIsNone(manager.osc_client)
 
+    def test_disconnected_chatbox_status_is_ellipsis(self):
+        manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
+        self.assertEqual(manager.format_device_status([]), '...')
+        self.assertEqual(manager.format_detailed_status([]), '...')
+
+    def test_multi_device_status_contains_only_device_lines(self):
+        manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
+        connection = SimpleNamespace(get_device_states=lambda: [
+            {
+                'device_kind': 'coyote',
+                'upper_strength': {'A': 80, 'B': 70},
+            },
+            {
+                'device_kind': 'opossum',
+                'upper_strength': {'A': 60, 'B': 50},
+            },
+        ])
+
+        self.assertEqual(
+            manager.format_device_status([connection]),
+            '郊狼 MAX A:80 B:70\n负鼠 MAX A:60 B:50',
+        )
+
+    def test_connected_app_without_devices_shows_ellipsis(self):
+        manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
+        connection = SimpleNamespace(get_device_states=lambda: [])
+        self.assertEqual(manager.format_device_status([connection]), '...')
+        self.assertEqual(manager.format_detailed_status([connection]), '...')
+
 
 if __name__ == '__main__':
     unittest.main()

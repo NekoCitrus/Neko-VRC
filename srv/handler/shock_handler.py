@@ -432,9 +432,11 @@ class ShockHandler(BaseHandler):
             sent_frame = scale_coyote_frame(source_frame, current_strength)
             wave = json.dumps([sent_frame], separators=(',', ':'))
             last_strength = current_strength
-            await self.DG_CONN.broadcast_wave(
+            delivered = await self.DG_CONN.broadcast_wave(
                 self.channel, wavestr=wave, device_kind=self.device_kind,
             )
+            if delivered is False:
+                continue
             self.last_sent_frame = sent_frame
             self.last_sent_strengths = frame_amplitudes(sent_frame)
             self._emit_debug_event()

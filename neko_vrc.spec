@@ -7,7 +7,7 @@ openvr_data = collect_data_files('openvr', includes=['*.dll'])
 
 
 a = Analysis(
-    ['neko_vrc.py'],
+    ['neko_backend.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Neko-VRC',
+    name='Neko-VRC.Backend',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

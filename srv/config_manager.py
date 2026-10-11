@@ -14,7 +14,7 @@ from srv import WAVEFORM_NAMES_BY_DEVICE
 # SteamVR manifest when upgrading to the renamed application.
 APP_NAME = 'ShockingVRChat'
 PRODUCT_NAME = 'Neko-VRC'
-CONFIG_FILE_VERSION = 'v0.9'
+CONFIG_FILE_VERSION = 'v2.0'
 CONFIG_FILENAME = f'settings-{CONFIG_FILE_VERSION}.yaml'
 
 DEFAULT_EXTRA_PARAMETERS = (
@@ -69,6 +69,10 @@ DEFAULT_BASIC_SETTINGS = {
 
 DEFAULT_SETTINGS = {
     'SERVER_IP': None,
+    'connections': {
+        'coyote': {'mode': 'app', 'address': '', 'model': 'coyote3'},
+        'opossum': {'mode': 'app', 'address': '', 'model': 'opossum'},
+    },
     'dglab3': {
         device_kind: {
             channel: {
@@ -257,6 +261,18 @@ def _validate_host(section, name):
 
 
 def validate_config(settings, basic_settings):
+    connections = settings.get('connections', DEFAULT_SETTINGS['connections'])
+    if not isinstance(connections, dict):
+        raise ValueError('connections 必须是设备连接配置。')
+    for kind in ('coyote', 'opossum'):
+        connection = connections.get(kind)
+        if not isinstance(connection, dict) or connection.get('mode') not in ('app', 'bluetooth'):
+            raise ValueError(f'{kind} 连接方式无效。')
+        if not isinstance(connection.get('address'), str):
+            raise ValueError(f'{kind} 蓝牙地址无效。')
+        models = ('coyote3', 'coyote2') if kind == 'coyote' else ('opossum',)
+        if connection.get('model') not in models:
+            raise ValueError(f'{kind} 蓝牙型号无效。')
     general = settings['general']
     for option in ('run_in_background', 'steamvr_auto_start'):
         if not isinstance(general.get(option), bool):
@@ -397,7 +413,7 @@ class ConfigManager:
         return value
 
     def _find_legacy_files(self):
-        for version in ('v0.8', 'v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
+        for version in ('v0.9', 'v0.8', 'v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
             for base in (self.config_dir, self.app_dir):
                 unified = base / f'settings-{version}.yaml'
                 if unified.exists():

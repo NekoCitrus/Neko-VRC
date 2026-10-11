@@ -94,7 +94,7 @@ class AdvancedChatboxManager:
     def format_device_status(self, connections, shock_handlers=None):
         """格式化精简设备状态。"""
         if not connections:
-            return '设备未连接'
+            return '...'
 
         self._refresh_handler_status(shock_handlers)
         status_lines = []
@@ -112,15 +112,15 @@ class AdvancedChatboxManager:
                     f"{label} MAX A:{upper.get('A', 0)} B:{upper.get('B', 0)}"
                 )
         if not status_lines:
-            return 'APP已连接，等待设备'
+            return '...'
         if len(status_lines) > 1:
-            return '设备状态 - 多设备:\n' + '\n'.join(status_lines)
+            return '\n'.join(status_lines)
         return status_lines[0]
 
     def format_detailed_status(self, connections, shock_handlers=None):
         """格式化详细状态信息。"""
         if not connections:
-            return '设备未连接'
+            return '...'
 
         self._refresh_handler_status(shock_handlers)
         detailed_lines = []
@@ -154,7 +154,7 @@ class AdvancedChatboxManager:
                     f"({strength_pct_b}%) {mode_b}{activity_b}"
                 )
         if not detailed_lines:
-            return 'APP已连接，等待设备'
+            return '...'
         return '\n\n'.join(detailed_lines)
 
     async def update_chatbox(self, connections, shock_handlers=None, detailed=False):
@@ -192,7 +192,7 @@ class AdvancedChatboxManager:
             return
         try:
             if notify:
-                self.send_custom_message('设备已断开')
+                self.send_custom_message('...')
             if notify and self.settings.get('set_avatar_parameter', True):
                 self.osc_client.send_message('/avatar/parameters/ChatboxEnable', 0.0)
             logger.info('Chatbox功能已清理')

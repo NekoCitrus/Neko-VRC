@@ -1,0 +1,106 @@
+<Window x:Class="NekoVRC.Desktop.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:NekoVRC.Desktop"
+ xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+ Style="{StaticResource {x:Type Window}}"
+ Title="Neko-VRC" Width="1040" Height="820" MinWidth="960" MinHeight="800"
+ WindowStyle="None" WindowStartupLocation="CenterScreen">
+ <shell:WindowChrome.WindowChrome>
+  <shell:WindowChrome CaptionHeight="32" ResizeBorderThickness="5" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
+ </shell:WindowChrome.WindowChrome>
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="32"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Grid Background="Black">
+   <TextBlock Text="Neko-VRC" FontSize="12" Margin="16,0,0,0"/>
+   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+    <Button Content="─" Click="MinimizeWindow" ToolTip="最小化" Width="46" Padding="0" Margin="0" Background="Black" BorderThickness="0"/>
+    <Button Content="□" Click="ToggleMaximize" ToolTip="最大化 / 还原" Width="46" Padding="0" Margin="0" Background="Black" BorderThickness="0"/>
+    <Button Content="×" Click="CloseWindow" ToolTip="关闭" Width="46" Padding="0" Margin="0" Background="Black" BorderThickness="0"/>
+   </StackPanel>
+  </Grid>
+  <Grid Grid.Row="1" Margin="20,12,20,16">
+   <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <StackPanel>
+    <TextBlock Text="Neko-VRC" FontSize="24" FontWeight="SemiBold" Margin="0,6,0,28"/>
+    <Button Content="基本设置" Command="{Binding PageCommand}" CommandParameter="general"/>
+    <Button Content="郊狼" Command="{Binding PageCommand}" CommandParameter="coyote"/>
+    <Button Content="负鼠" Command="{Binding PageCommand}" CommandParameter="opossum"/>
+    <Button Content="运行调试" Command="{Binding PageCommand}" CommandParameter="debug"/>
+    <Button Content="版权" Command="{Binding PageCommand}" CommandParameter="about"/>
+   </StackPanel>
+   <Grid x:Name="PageArea" Grid.Column="2">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <TextBlock Text="{Binding Avatar}" Margin="0,4,0,12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Avatar}"/>
+    <StackPanel Grid.Row="1" Visibility="{Binding IsGeneral, Converter={StaticResource Visible}}">
+     <TextBlock Text="基本设置" FontSize="26" Margin="0,0,0,16"/>
+     <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="20" Margin="0,0,0,16">
+      <StackPanel>
+       <TextBlock Text="使用 OSCQuery，无需额外 OSC 分流软件。" Margin="0,0,0,12"/>
+       <TextBlock Text="在郊狼和负鼠页面分别选择 App 或蓝牙直连。"/>
+       <Button Content="App 扫码连接" Command="{Binding QrCommand}" HorizontalAlignment="Left" Margin="0,16,0,0"/>
+      </StackPanel>
+     </Border>
+     <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="20">
+      <StackPanel>
+       <CheckBox Content="启用 Chatbox" IsChecked="{Binding Chatbox}"/>
+       <CheckBox Content="关闭窗口后在托盘运行" IsChecked="{Binding Background}"/>
+       <CheckBox Content="跟随 SteamVR 启动" IsChecked="{Binding SteamVR}"/>
+       <TextBlock Text="{Binding ConfigPath}" Margin="0,14,0,0" FontSize="12"/>
+      </StackPanel>
+     </Border>
+    </StackPanel>
+    <local:DeviceView Grid.Row="1" DataContext="{Binding CurrentDevice}" Visibility="{Binding DataContext.IsDevice, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Visible}}"/>
+    <Grid Grid.Row="1" Visibility="{Binding IsDebug, Converter={StaticResource Visible}}">
+     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="140"/></Grid.RowDefinitions>
+     <TextBlock Text="运行调试" FontSize="26" Margin="0,0,0,12"/>
+     <ItemsControl Grid.Row="1" ItemsSource="{Binding Devices}">
+      <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate><DataTemplate>
+       <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+        <StackPanel>
+         <TextBlock Text="{Binding Name}" FontSize="20"/>
+         <TextBlock Text="{Binding Status}" Margin="0,4,0,4"/>
+         <ItemsControl ItemsSource="{Binding Channels}">
+          <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate><DataTemplate>
+          <StackPanel Margin="0,4,10,4"><TextBlock Text="{Binding Name}" FontWeight="SemiBold"/><TextBlock Text="{Binding Debug}" FontSize="12" Margin="0,2,0,0"/></StackPanel>
+         </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+        </StackPanel>
+       </Border>
+      </DataTemplate></ItemsControl.ItemTemplate>
+     </ItemsControl>
+     <TextBox Grid.Row="2" Text="{Binding Logs, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+    </Grid>
+    <StackPanel Grid.Row="1" Visibility="{Binding IsAbout, Converter={StaticResource Visible}}">
+     <TextBlock Text="Neko-VRC" FontSize="26" Margin="0,0,0,8"/>
+     <TextBlock Text="VRChat OSC · 郊狼 / 负鼠" Margin="0,0,0,16"/>
+     <TextBlock Text="原始项目：Shocking-VRChat · Chatbox 来源：DG-LAB-VRCOSC" Margin="0,0,0,8" FontSize="12"/>
+     <TextBlock Text="前端贡献：WenX1ang · 猫橘Citrus · ChatGPT" Margin="0,0,0,12"/>
+     <ItemsControl ItemsSource="{Binding Credits}"><ItemsControl.ItemTemplate><DataTemplate>
+      <Grid Margin="0,0,0,10">
+       <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+       <TextBlock Text="{Binding Name}"/>
+       <TextBlock Grid.Column="1"><Hyperlink NavigateUri="{Binding Url}" RequestNavigate="OpenCredit"><Run Text="{Binding Url}"/></Hyperlink></TextBlock>
+      </Grid>
+     </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+     <TextBlock Text="开源许可：GNU Affero General Public License v3.0" Margin="0,8,0,4" FontSize="12"/>
+     <TextBlock Text="DG-LAB、VRChat、SteamVR 等名称及商标归各自权利人所有。" FontSize="12"/>
+    </StackPanel>
+   </Grid>
+   <Border Grid.Row="1" Grid.ColumnSpan="3" BorderBrush="#39331B" BorderThickness="0,1,0,0" Padding="0,10,0,0" Margin="0,10,0,0">
+    <StackPanel>
+     <TextBlock Text="{Binding Status}" Margin="0,0,0,8" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}"/>
+     <WrapPanel>
+      <Button Content="保存并应用" Command="{Binding SaveCommand}" Margin="0,0,8,0"/>
+      <Button Content="启动服务" Command="{Binding StartCommand}" Margin="0,0,8,0"/>
+      <Button Content="急停" Command="{Binding StopCommand}" BorderBrush="{StaticResource Ink}" Margin="0,0,8,0"/>
+      <Button Content="恢复" Command="{Binding ResumeCommand}" Margin="0,0,8,0"/>
+      <Button Content="退出" Click="ExitApp" Margin="0"/>
+     </WrapPanel>
+    </StackPanel>
+   </Border>
+  </Grid>
+ </Grid>
+</Window>
