@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import time
 from itertools import product
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import shocking_vrchat
 import srv
@@ -72,6 +73,11 @@ def make_settings():
 
 
 class BaseHandlerTests(unittest.TestCase):
+    def test_nonfinite_values_are_rejected(self):
+        for value in (float('nan'), float('inf'), -float('inf')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                BaseHandler.param_sanitizer((value,))
+
     def test_bool_is_normalized_to_integer(self):
         self.assertEqual(BaseHandler.param_sanitizer((True,)), 1)
         self.assertIs(type(BaseHandler.param_sanitizer((True,))), int)
@@ -82,6 +88,95 @@ class BaseHandlerTests(unittest.TestCase):
 
 
 class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_availability_hints_follow_catalog_selected_zones_and_switches(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        try:
+            self.assertEqual(handler.parameter_hint, '等待读取模型 OSC 参数')
+            handler.set_avatar_parameters(())
+            self.assertEqual(handler.parameter_hint, '无可用的 Socket、Plug、PCS、LMS 参数')
+            handler.set_avatar_parameters((PCS_PROXIMITY_ADDRESS, LMS_PROXIMITY_ADDRESS))
+            self.assertIn('PCS 回退已启用', handler.parameter_hint)
+            self.assertIn('可启用 LMS 回退', handler.parameter_hint)
+            handler.pcs_enabled = False
+            self.assertIn('可启用 PCS 回退', handler.parameter_hint)
+            handler.set_avatar_parameters((
+                '/avatar/parameters/OGB/Orf/TestSocket/PenSelf',
+                '/avatar/parameters/OGB/Pen/Test/PenOthers',
+            ))
+            self.assertEqual(handler.parameter_hint, '')
+            self.assertFalse(handler.socket_depth_available)
+            handler.socket_zone = 'Missing'
+            self.assertIn('无 Socket 深度', handler.parameter_hint)
+            self.assertIn('无 PCS/LMS 回退参数', handler.parameter_hint)
+            self.assertEqual(handler.get_mode_info()['parameter_hint'], handler.parameter_hint)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_query_depth_expires_without_stopping_newer_udp_depth(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        handler.start_background_jobs()
+        path = '/avatar/parameters/OGB/Orf/TestSocket/PenSelf'
+        other = '/avatar/parameters/OGB/Orf/TestSocket/PenOthers'
+        try:
+            handler.receive_query_value(path, (SPS_SOCKET, 'PenSelf'), 0.9, time.perf_counter())
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.9)
+            handler.osc_handler(other, (SPS_SOCKET, 'PenOthers'), 0.4)
+            await asyncio.sleep(0.58)
+            self.assertEqual(handler.current_strength_percentage, 0.4)
+            self.assertNotIn('PenSelf', handler.calculators[(SPS_SOCKET, 'TestSocket')].values)
+            handler.receive_query_value(path, (SPS_SOCKET, 'PenSelf'), 0.9, time.perf_counter())
+            handler.osc_handler(path, (SPS_SOCKET, 'PenSelf'), 0.2)
+            await asyncio.sleep(0.58)
+            self.assertEqual(handler.calculators[(SPS_SOCKET, 'TestSocket')].values['PenSelf'], 0.2)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_query_only_depth_stops_after_timeout(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        handler.start_background_jobs()
+        try:
+            handler.receive_query_value('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',
+                                        (SPS_SOCKET, 'PenSelf'), 1, time.perf_counter())
+            await asyncio.sleep(0)
+            self.assertTrue(handler.is_active)
+            await asyncio.sleep(0.58)
+            self.assertFalse(handler.is_active)
+            self.assertFalse(handler.socket_depth_available)
+        finally:
+            await handler.stop_background_jobs()
+
+    async def test_stale_query_cannot_override_udp_hot_save_or_avatar_reset(self):
+        handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
+        path = '/avatar/parameters/OGB/Orf/TestSocket/PenSelf'
+        binding = (SPS_SOCKET, 'PenSelf')
+        try:
+            before_udp = time.perf_counter()
+            handler.osc_handler(path, binding, 0.2)
+            handler.receive_query_value(path, binding, 1, before_udp)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.2)
+            for timestamp in (time.perf_counter() - 1, time.perf_counter() + 10, float('nan')):
+                handler.receive_query_value(path, binding, 1, timestamp)
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.2)
+            before_reset = time.perf_counter()
+            await handler.reconfigure(copy.deepcopy(handler.shock_settings))
+            handler.reset_for_avatar_change(observed_at=before_reset)
+            handler.receive_query_value(path, binding, 1, before_reset)
+            await asyncio.sleep(0)
+            self.assertFalse(handler.is_active)
+            handler.receive_query_value(path, binding, 0.4, time.perf_counter())
+            await asyncio.sleep(0)
+            self.assertEqual(handler.current_strength_percentage, 0.4)
+            before_reset = time.perf_counter()
+            handler.reset_for_avatar_change()
+            handler.receive_query_value(path, binding, 1, before_reset)
+            await asyncio.sleep(0)
+            self.assertFalse(handler.is_active)
+        finally:
+            await handler.stop_background_jobs()
+
     async def test_queued_trigger_cannot_restore_strength_after_hot_disable(self):
         handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind='opossum')
         try:
@@ -216,7 +311,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await handler.stop_background_jobs()
 
-    async def test_declared_socket_parameters_disable_pcs_even_when_depth_is_zero(self):
+    async def test_declared_socket_needs_values_before_it_disables_pcs(self):
         base = '/avatar/parameters/OGB/Orf/TestSocket/'
         for signals in (('PenSelf',), ('PenOthersNewRoot', 'PenOthersNewTip')):
             with self.subTest(signals=signals):
@@ -224,6 +319,11 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     handler.set_avatar_parameters(tuple(base + signal for signal in signals))
                     handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 1)
+                    await asyncio.sleep(0)
+                    self.assertFalse(handler.socket_depth_available)
+                    self.assertEqual(handler.current_strength_percentage, 1)
+                    for signal in signals:
+                        handler.osc_handler(base + signal, (SPS_SOCKET, signal), 0)
                     await asyncio.sleep(0)
                     self.assertTrue(handler.socket_depth_available)
                     self.assertEqual(handler.current_strength_percentage, 0)
@@ -252,6 +352,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
         handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
         try:
             handler.set_avatar_parameters(('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',))
+            handler.osc_handler('/avatar/parameters/OGB/Orf/TestSocket/PenSelf', (SPS_SOCKET, 'PenSelf'), 0)
             handler.osc_handler(PCS_PROXIMITY_ADDRESS, ('extra', 'value'), 1)
             await asyncio.sleep(0)
             self.assertEqual(handler.current_strength_percentage, 0)
@@ -281,6 +382,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
         try:
             paths = ('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',)
             handler.set_avatar_parameters(paths)
+            handler.osc_handler(paths[0], (SPS_SOCKET, 'PenSelf'), 0)
             await asyncio.sleep(0)
             self.assertTrue(handler.socket_depth_available)
             config = copy.deepcopy(handler.shock_settings)
@@ -989,10 +1091,10 @@ class ChatboxTests(unittest.TestCase):
         self.assertEqual(osc_socket.fileno(), -1)
         self.assertIsNone(manager.osc_client)
 
-    def test_disconnected_chatbox_status_is_ellipsis(self):
+    def test_disconnected_chatbox_status_is_empty(self):
         manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
-        self.assertEqual(manager.format_device_status([]), '...')
-        self.assertEqual(manager.format_detailed_status([]), '...')
+        self.assertEqual(manager.format_device_status([]), '')
+        self.assertEqual(manager.format_detailed_status([]), '')
 
     def test_multi_device_status_contains_only_device_lines(self):
         manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
@@ -1011,12 +1113,115 @@ class ChatboxTests(unittest.TestCase):
             manager.format_device_status([connection]),
             '郊狼 MAX A:80 B:70\n负鼠 MAX A:60 B:50',
         )
+        self.assertEqual(
+            manager.format_detailed_status([connection]),
+            '郊狼 MAX A:80 B:70\n负鼠 MAX A:60 B:50',
+        )
 
-    def test_connected_app_without_devices_shows_ellipsis(self):
+    def test_connected_app_without_devices_is_empty(self):
         manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
         connection = SimpleNamespace(get_device_states=lambda: [])
-        self.assertEqual(manager.format_device_status([connection]), '...')
-        self.assertEqual(manager.format_detailed_status([connection]), '...')
+        self.assertEqual(manager.format_device_status([connection]), '')
+        self.assertEqual(manager.format_detailed_status([connection]), '')
+
+    def test_unbound_legacy_connection_is_not_a_connected_device(self):
+        manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
+        connection = SimpleNamespace(bound=False, get_upper_strength=lambda _: 100)
+        self.assertEqual(manager.format_device_status([connection]), '')
+        self.assertEqual(manager.format_detailed_status([connection]), '')
+
+    def test_legacy_coyote_uses_effective_upper_limits(self):
+        manager = AdvancedChatboxManager({'chatbox': {'enable': False}})
+        connection = SimpleNamespace(
+            bound=True, uuid='legacy', strength={'A': 10, 'B': 20},
+            get_upper_strength=lambda channel: {'A': 70, 'B': 60}[channel],
+        )
+        self.assertEqual(manager.format_device_status([connection]), '郊狼 MAX A:70 B:60')
+        self.assertIn('A: 10/70', manager.format_detailed_status([connection]))
+
+
+class ChatboxUpdateTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.client = Mock()
+        with patch('srv.advanced_chatbox_manager.SimpleUDPClient', return_value=self.client):
+            self.manager = AdvancedChatboxManager({'chatbox': {
+                'enable': True, 'set_avatar_parameter': False, 'update_interval': 3.0,
+            }})
+        self.addCleanup(self.manager.cleanup, notify=False)
+        self.states = [
+            {'slot_id': 'coyote', 'device_kind': 'coyote', 'upper_strength': {'A': 80, 'B': 70}},
+            {'slot_id': 'opossum', 'device_kind': 'opossum', 'upper_strength': {'A': 60, 'B': 50}},
+        ]
+
+    async def test_waiting_for_connection_sends_nothing(self):
+        await self.manager.update_chatbox([])
+        await self.manager.update_chatbox([SimpleNamespace(get_device_states=lambda: [])])
+        await self.manager.update_chatbox([], detailed=True)
+        self.manager.cleanup()
+        self.client.send_message.assert_not_called()
+
+    async def test_disconnect_clears_once_without_waiting_for_interval(self):
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=100):
+            await self.manager.update_chatbox([], device_states=self.states)
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=100.1):
+            await self.manager.update_chatbox([])
+            await self.manager.update_chatbox([])
+        self.assertEqual(self.client.send_message.call_count, 2)
+        self.client.send_message.assert_called_with('/chatbox/input', ['', True, False])
+
+    async def test_reconnect_updates_immediately(self):
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=100):
+            await self.manager.update_chatbox([], device_states=self.states)
+            await self.manager.update_chatbox([])
+            await self.manager.update_chatbox([], device_states=self.states)
+        self.assertEqual(self.client.send_message.call_count, 3)
+        self.client.send_message.assert_called_with(
+            '/chatbox/input', ['郊狼 MAX A:80 B:70\n负鼠 MAX A:60 B:50', True, False],
+        )
+
+    async def test_one_device_disconnects_removes_only_its_line_immediately(self):
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=100):
+            await self.manager.update_chatbox([], device_states=self.states)
+            await self.manager.update_chatbox([], device_states=self.states[1:])
+        self.assertEqual(self.client.send_message.call_count, 2)
+        self.client.send_message.assert_called_with('/chatbox/input', ['负鼠 MAX A:60 B:50', True, False])
+
+    async def test_connected_updates_still_respect_refresh_interval(self):
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=100):
+            await self.manager.update_chatbox([], device_states=self.states)
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=102.9):
+            await self.manager.update_chatbox([], device_states=self.states)
+        self.assertEqual(self.client.send_message.call_count, 1)
+        with patch('srv.advanced_chatbox_manager.time.monotonic', return_value=103):
+            await self.manager.update_chatbox([], device_states=self.states)
+        self.assertEqual(self.client.send_message.call_count, 2)
+
+    async def test_detailed_multi_device_output_is_only_limits(self):
+        await self.manager.update_chatbox([], detailed=True, device_states=iter(self.states))
+        self.client.send_message.assert_called_once_with(
+            '/chatbox/input', ['郊狼 MAX A:80 B:70\n负鼠 MAX A:60 B:50', True, False],
+        )
+
+    async def test_cleanup_clears_existing_display_and_closes_socket(self):
+        await self.manager.update_chatbox([], device_states=self.states)
+        self.manager.cleanup()
+        self.client.send_message.assert_called_with('/chatbox/input', ['', True, False])
+        self.client._sock.close.assert_called_once()
+
+    async def test_failed_clear_is_retried(self):
+        await self.manager.update_chatbox([], device_states=self.states)
+        self.client.send_message.side_effect = OSError('send failed')
+        await self.manager.update_chatbox([])
+        self.assertTrue(self.manager.last_status_text)
+        self.client.send_message.side_effect = None
+        await self.manager.update_chatbox([])
+        self.assertEqual(self.manager.last_status_text, '')
+
+    async def test_disabled_chatbox_never_sends(self):
+        self.manager.enabled = False
+        await self.manager.update_chatbox([], device_states=self.states)
+        self.client.send_message.assert_not_called()
+        self.manager.enabled = True
 
 
 if __name__ == '__main__':

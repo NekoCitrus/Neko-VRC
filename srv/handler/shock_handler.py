@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import time
 
 from loguru import logger
@@ -11,7 +12,8 @@ from .base_handler import BaseHandler
 from ..connector.coyotev3ws import DGConnection
 from ..sps_depth import (
     LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS, OGB_PARAMETER_PREFIX,
-    SPSDepthCalculator, SPS_PLUG, SPS_SOCKET, has_socket_depth_parameters, sps_osc_bindings,
+    SPSDepthCalculator, SPS_PLUG, SPS_SOCKET, has_socket_depth_parameters,
+    has_plug_depth_parameters, sps_osc_bindings,
 )
 from ..waveform import frame_amplitudes, load_waveform_frames, scale_coyote_frame
 
@@ -45,6 +47,9 @@ class ShockHandler(BaseHandler):
         self.lms_value = None
         self.pcs_value = None
         self.avatar_parameter_paths = None
+        self.query_input_expiries = {}
+        self.udp_input_times = {}
+        self.input_reset_time = 0.0
         self.map_event_until = 0.0
         self.current_mode = 'none'
         self.active_source = ''
@@ -117,6 +122,8 @@ class ShockHandler(BaseHandler):
             'sent_frame': self.last_sent_frame,
             'sent_strengths': self.last_sent_strengths,
             'socket_depth_available': self.socket_depth_available,
+            'parameter_hint': self.parameter_hint,
+            'parameter_availability': self.parameter_availability,
             'enabled_sources': {
                 'socket': self.socket_enabled, 'plug': self.plug_enabled,
                 'extra_map': self.extra_config['enabled'],
@@ -126,8 +133,8 @@ class ShockHandler(BaseHandler):
 
     @property
     def socket_depth_available(self):
-        paths = set(self.avatar_parameter_paths or ())
-        # Actual validated OSC messages are also evidence, even before discovery
+        paths = set()
+        # Actual validated OSC/OSCQuery values are evidence, even before discovery
         # completes or if an avatar unlocks between OSCQuery polls.
         for (trigger_type, zone), calculator in self.calculators.items():
             if trigger_type == SPS_SOCKET:
@@ -135,21 +142,57 @@ class ShockHandler(BaseHandler):
                              for signal in calculator.values)
         return has_socket_depth_parameters(paths, self.socket_zone)
 
+    @property
+    def parameter_availability(self):
+        paths = self.avatar_parameter_paths or ()
+        return {
+            'known': self.avatar_parameter_paths is not None,
+            'socket': has_socket_depth_parameters(paths, self.socket_zone),
+            'plug': has_plug_depth_parameters(paths, self.plug_zone),
+            'pcs': PCS_PROXIMITY_ADDRESS in paths,
+            'lms': LMS_PROXIMITY_ADDRESS in paths,
+        }
+
+    @property
+    def parameter_hint(self):
+        available = self.parameter_availability
+        if not available['known']:
+            return '等待读取模型 OSC 参数'
+        if not any(available[name] for name in ('socket', 'plug', 'pcs', 'lms')):
+            return '无可用的 Socket、Plug、PCS、LMS 参数'
+        missing = []
+        if self.socket_enabled and not available['socket']:
+            missing.append('Socket')
+        if self.plug_enabled and not available['plug']:
+            missing.append('Plug')
+        if not missing:
+            return ''
+        fallbacks = []
+        for name, enabled in (('pcs', self.pcs_enabled), ('lms', self.lms_enabled)):
+            if available[name]:
+                fallbacks.append(f"{name.upper()} 回退已启用" if enabled else f"可启用 {name.upper()} 回退")
+        return '无 ' + '/'.join(missing) + ' 深度；' + ('，'.join(fallbacks) or '无 PCS/LMS 回退参数')
+
     def set_avatar_parameters(self, parameter_paths):
         paths = None if parameter_paths is None else frozenset(parameter_paths)
         if paths == self.avatar_parameter_paths:
             return
         self.avatar_parameter_paths = paths
         self.pcs_value = None
+        self.lms_value = None
         if paths is not None:
+            self.query_input_expiries = {path: expiry for path, expiry in self.query_input_expiries.items() if path in paths}
+            self.udp_input_times = {path: timestamp for path, timestamp in self.udp_input_times.items() if path in paths}
             for key, calculator in tuple(self.calculators.items()):
                 trigger_type, zone = key
-                if trigger_type == SPS_SOCKET and any(
-                    f'{OGB_PARAMETER_PREFIX}Orf/{zone}/{signal}' not in paths
+                ogb_kind = 'Orf' if trigger_type == SPS_SOCKET else 'Pen'
+                if any(
+                    f'{OGB_PARAMETER_PREFIX}{ogb_kind}/{zone}/{signal}' not in paths
                     for signal in calculator.values
                 ):
                     self.calculators.pop(key)
                     self.calculator_inputs.pop(key, None)
+            self.extra_values = {path: value for path, value in self.extra_values.items() if path in paths}
         winner = self._winner()
         self._set_winner(winner)
         self._track_task(self._apply_current_winner())
@@ -185,6 +228,20 @@ class ShockHandler(BaseHandler):
         return binding
 
     def osc_handler(self, address, binding, *args):
+        return self._receive_value(address, binding, args)
+
+    def receive_query_value(self, address, binding, value, observed_at):
+        # Python 3.10's Windows monotonic clock is too coarse to order a fast
+        # hot-save against an in-flight HTTP request. Use the high-resolution
+        # performance clock for input ordering, keeping output timers separate.
+        now = time.perf_counter()
+        if (not math.isfinite(observed_at) or observed_at < self.input_reset_time
+                or not 0 <= now - observed_at < EXTRA_PARAMETER_TIMEOUT
+                or self.udp_input_times.get(address, -1) >= observed_at):
+            return
+        self._receive_value(address, binding, (value,), observed_at)
+
+    def _receive_value(self, address, binding, args, query_observed_at=None):
         try:
             source, signal = self._unwrap_binding(binding)
             value = self.param_sanitizer(args)
@@ -192,12 +249,18 @@ class ShockHandler(BaseHandler):
             logger.warning(f'通道 {self.channel} 忽略无效 OSC 参数 {address}: {exc}')
             return None
         raw_value = float(value)
+        if not math.isfinite(raw_value):
+            return None
+        now = time.monotonic()
+        expiry = now + EXTRA_PARAMETER_TIMEOUT
+        if query_observed_at is not None:
+            expiry -= time.perf_counter() - query_observed_at
         if address == PCS_PROXIMITY_ADDRESS:
             if not self.pcs_enabled:
                 return None
             self.pcs_value = (
                 self._distance_depth(raw_value),
-                time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
+                expiry, raw_value,
             )
         elif address == LMS_PROXIMITY_ADDRESS:
             if not self.lms_enabled:
@@ -205,7 +268,7 @@ class ShockHandler(BaseHandler):
             # Route even overlapping user wildcard bindings through this gate.
             self.lms_value = (
                 self._distance_depth(raw_value),
-                time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
+                expiry, raw_value,
             )
         elif source in (SOURCE_LMS, SOURCE_PCS):
             return None
@@ -216,7 +279,7 @@ class ShockHandler(BaseHandler):
                     or (address.startswith(f'{OGB_PARAMETER_PREFIX}Pen/') and not self.plug_enabled)):
                 return None
             self.extra_values[address] = (
-                self._distance_depth(raw_value), time.monotonic() + EXTRA_PARAMETER_TIMEOUT, raw_value,
+                self._distance_depth(raw_value), expiry, raw_value,
             )
         else:
             if ((source == SPS_SOCKET and not (self.socket_enabled or self.pcs_enabled))
@@ -232,6 +295,11 @@ class ShockHandler(BaseHandler):
             )
             calculator.update(signal, raw_value)
             self.calculator_inputs[(source, zone)] = (address, raw_value)
+        if query_observed_at is None:
+            self.udp_input_times[address] = time.perf_counter()
+            self.query_input_expiries.pop(address, None)
+        else:
+            self.query_input_expiries[address] = expiry
         winner = self._winner()
         self._set_winner(winner)
         self._track_task(self._apply_current_winner())
@@ -310,17 +378,26 @@ class ShockHandler(BaseHandler):
         self.extra_values.clear()
         self.lms_value = None
         self.pcs_value = None
+        self.query_input_expiries.clear()
+        self.udp_input_times.clear()
+        self.input_reset_time = time.perf_counter()
         self.map_event_until = 0.0
         self._load_settings(channel_settings)
         self._set_winner((0.0, '', '', '', 0.0))
         await self._clear_output()
 
-    def reset_for_avatar_change(self):
+    def reset_for_avatar_change(self, observed_at=None):
         self.calculators.clear()
         self.calculator_inputs.clear()
         self.extra_values.clear()
         self.lms_value = None
         self.pcs_value = None
+        self.query_input_expiries.clear()
+        self.udp_input_times.clear()
+        # A coherent new-avatar snapshot may seed its own values, but cannot
+        # replay a request predating a newer hot-save/resume/reset boundary.
+        self.input_reset_time = (time.perf_counter() if observed_at is None
+                                 else max(self.input_reset_time, observed_at))
         self.avatar_parameter_paths = None
         self.map_event_until = 0.0
         self._set_winner((0.0, '', '', '', 0.0))
@@ -358,6 +435,15 @@ class ShockHandler(BaseHandler):
         while True:
             await asyncio.sleep(0.05)
             now = time.monotonic()
+            query_expired = [path for path, expiry in self.query_input_expiries.items() if expiry <= now]
+            for path in query_expired:
+                self.query_input_expiries.pop(path, None)
+                parts = path.strip('/').split('/')
+                if len(parts) == 6 and parts[:3] == ['avatar', 'parameters', 'OGB']:
+                    kind = SPS_SOCKET if parts[3] == 'Orf' else SPS_PLUG
+                    calculator = self.calculators.get((kind, parts[4]))
+                    if calculator is not None:
+                        calculator.forget(parts[5])
             expired = [
                 address for address, (_depth, expiry, _raw) in self.extra_values.items()
                 if expiry <= now
@@ -371,7 +457,7 @@ class ShockHandler(BaseHandler):
                 self.pcs_value = None
             if map_expired:
                 self.map_event_until = 0.0
-            if expired or map_expired or lms_expired or pcs_expired:
+            if expired or map_expired or lms_expired or pcs_expired or query_expired:
                 for address in expired:
                     self.extra_values.pop(address, None)
                 winner = self._winner(now)

@@ -3,6 +3,8 @@
 
 [English version](README_en.md)
 
+当前版本：**v2.0.0**。包含 WPF 界面、电脑直连蓝牙、独立四通道触发、OSCQuery 参数读取与回退提示，以及精简的多设备 chatbox 显示。
+
 一个通过 VRChat OSC 读取 Avatar SPS/OGB 插入深度，并联动郊狼 DG-LAB 3.0 或负鼠振动控制器的小工具。
 
 我们的 VRChat 群组： [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/SHOCK.2911)
@@ -59,7 +61,7 @@ App 模式下，郊狼与负鼠可经同一条 DG-LAB 4 APP Socket V4 连接控�
 
 ### 源码构建
 
-准备 .NET 10 SDK 与 Python 环境，安装 `requirements-build.txt` 后运行 `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`。输出目录为 `dist/Neko-VRC-WPF/`，必须完整分发，不能只复制前端 exe。源码启动先构建 `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj`，再运行 `neko_vrc.py`；旧 Win32 界面仅保留为显式 `--legacy-ui` 回退入口。
+准备 .NET 10 SDK 与 Python 环境，安装 `requirements-build.txt` 后运行 `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`。v2.0.0 输出目录为 `dist/Neko-VRC-v2.0.0/`，必须完整分发，不能只复制前端 exe。源码启动先构建 `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj`，再运行 `neko_vrc.py`；旧 Win32 界面仅保留为显式 `--legacy-ui` 回退入口。
 
 一般设置，以及郊狼/负鼠各自的 A/B 触发、部位、波形和强度上限，建议直接在窗口修改。WebSocket 或 Web 服务端口等高级选项仍可在 YAML 中修改；手动修改 YAML 后请从托盘退出程序并重新打开。
 
@@ -80,6 +82,8 @@ App 模式下，郊狼与负鼠可经同一条 DG-LAB 4 APP Socket V4 连接控�
 | 监听 LMS | 关 | 开 |
 
 Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”部位。程序通过 OSCQuery 读取当前 Avatar 和 SPS 部位；`/avatar/change` 仅用于要求立即刷新。
+
+仅可读的数值参数参与可用性判断。Socket 回退判定以实际读到的有效深度信号为准，零值也有效；仅声明了参数不会阻止 PCS 回退。OSCQuery 当前值用于补充实时 OSC，超过 0.5 秒失效，急停时不用于恢复输出。各通道会提示可启用的 PCS/LMS 回退；这两种参数也不存在时显示“无可用的 Socket、Plug、PCS、LMS 参数”。提示不会自动修改复选框。
 
 自身 Socket 与自身 Plug 交互同样参与计算，`Self` 与 `Others` 取最大值，无需额外开关。请在 VRChat 中启用 `Avatar Self Interact`，并确保模型输出自身接触的 OGB 深度参数；只有吸附而没有深度信号时不会触发。参见 [OGB 设置说明](https://github.com/OscToys/osc.toys/blob/main/docs/20-getting-started.mdx)。
 
@@ -172,6 +176,8 @@ ws: # Websocket 服务配置
 
 ### Chatbox 与控制接口配置
 
+Chatbox 等待连接时不发送文字；最后一台设备断开后清空显示。已连接设备每台仅显示一行 A/B 有效强度上限，包含 App 和蓝牙直连设备，不附加介绍。
+
 程序会自动补充缺少的配置项：
 
 ```yaml
@@ -196,10 +202,10 @@ api:
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-build.txt
 python -m unittest discover -v
-pyinstaller --clean --noconfirm neko_vrc.spec
+powershell -ExecutionPolicy Bypass -File build-wpf.ps1
 ```
 
-PyInstaller 生成无控制台的单文件 `dist\Neko-VRC.exe`，配置不会写在 exe 旁，而是固定写入兼容目录 `%APPDATA%\ShockingVRChat\`。
+脚本构建自带 .NET 运行时的 WPF 前端及无控制台 Python 后台，生成 `dist\Neko-VRC-v2.0.0-win-x64.zip`。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置继续保存在 `%APPDATA%\ShockingVRChat\`，不写入发布目录。
 
 ## FAQ
 

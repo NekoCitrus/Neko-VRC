@@ -143,6 +143,19 @@ public partial class MainWindow : Window
         if (((SolidColorBrush)Foreground).Color != Color.FromRgb(250, 230, 135) || ((SolidColorBrush)Background).Color != Colors.Black) throw new Exception("主题颜色错误。");
         if (WindowStyle != WindowStyle.None || WindowChrome.GetWindowChrome(this)?.CaptionHeight != 32) throw new Exception("Unexpected native title bar.");
         if (_vm.Credits.Count != 11 || _vm.Credits.Any(c => !Uri.TryCreate(c.Url, UriKind.Absolute, out var uri) || uri.Scheme != "https")) throw new Exception("Invalid copyright links.");
+        // Synthetic catalog hints only: never inject trigger values or connect
+        // hardware. Verify the backend-state binding and representative widths.
+        string[] hints = { "无 Socket/Plug 深度；可启用 PCS 回退", "无 Socket/Plug 深度；可启用 LMS 回退", "无可用的 Socket、Plug、PCS、LMS 参数", "" };
+        var channels = new JsonObject();
+        int hintIndex = 0;
+        foreach (var device in _vm.Devices) {
+            var deviceChannels = new JsonObject();
+            foreach (var channel in device.Channels)
+                deviceChannels[channel.Name[..1]] = new JsonObject { ["parameter_hint"] = hints[hintIndex++] };
+            channels[device.Kind] = deviceChannels;
+        }
+        _vm.UpdateState(new JsonObject { ["service"] = "running", ["runtime"] = new JsonObject { ["device_channels"] = channels } });
+        if (!_vm.Devices.SelectMany(d => d.Channels).Select(c => c.ParameterHint).SequenceEqual(hints)) throw new Exception("Parameter hints were not bound to the correct channels.");
         foreach (bool minimum in new[] { false, true }) {
             Width = minimum ? MinWidth : 1040; Height = minimum ? MinHeight : 820;
             foreach (string page in new[] { "general", "coyote", "opossum", "debug", "about" }) {
@@ -162,7 +175,7 @@ public partial class MainWindow : Window
         await Task.Delay(300); await _vm.PollAsync();
         if (!_vm.Status.Contains("已急停")) throw new Exception("独立急停事件未生效。");
         await _vm.DeviceActionAsync("resume");
-        File.WriteAllText(System.IO.Path.Combine(_smokeDir!, "result.txt"), "PASS: WPF theme/title bar, 5 pages at default/minimum sizes without clipping or outer scrollbars, 11 copyright links, 4 channel defaults, named-pipe backend, service startup, hot save, stop/resume.\n");
+        File.WriteAllText(System.IO.Path.Combine(_smokeDir!, "result.txt"), "PASS: WPF theme/title bar, 5 pages at default/minimum sizes without clipping or outer scrollbars, parameter-hint channel binding, 11 copyright links, 4 channel defaults, named-pipe backend, service startup, hot save, stop/resume.\n");
         await FinishExitAsync(0);
     }
 }

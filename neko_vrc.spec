@@ -1,6 +1,34 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+    VarFileInfo, VarStruct, VSVersionInfo,
+)
+from pathlib import Path
+from xml.etree import ElementTree
+
+
+# Keep the packaged backend's Windows version in sync with the WPF frontend.
+version = ElementTree.parse(
+    Path(SPECPATH) / 'desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj',
+).findtext('./PropertyGroup/Version')
+version_parts = tuple(int(part) for part in version.split('.'))
+file_version = (version_parts + (0, 0, 0, 0))[:4]
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=file_version, prodvers=file_version),
+    kids=[
+        StringFileInfo([StringTable('040904B0', [
+            StringStruct('FileDescription', 'Neko-VRC Backend'),
+            StringStruct('FileVersion', version),
+            StringStruct('InternalName', 'Neko-VRC.Backend'),
+            StringStruct('OriginalFilename', 'Neko-VRC.Backend.exe'),
+            StringStruct('ProductName', 'Neko-VRC'),
+            StringStruct('ProductVersion', version),
+        ])]),
+        VarFileInfo([VarStruct('Translation', [1033, 1200])]),
+    ],
+)
 
 
 openvr_data = collect_data_files('openvr', includes=['*.dll'])
@@ -45,4 +73,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets/shocking_vrchat.ico'],
+    version=version_info,
 )

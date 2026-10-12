@@ -53,6 +53,8 @@ public sealed class ChannelViewModel : Observable
     public IReadOnlyList<string> Waveforms { get; }
     private string _debug = "无输出";
     public string Debug { get => _debug; set => Set(ref _debug, value); }
+    private string _parameterHint = "等待读取模型 OSC 参数";
+    public string ParameterHint { get => _parameterHint; set => Set(ref _parameterHint, value); }
 
     public ChannelViewModel(string name, string kind, JsonObject basic, JsonObject runtime, JsonArray waveforms)
     {
@@ -294,6 +296,7 @@ public sealed class MainViewModel : Observable
             foreach (var channel in device.Channels) {
                 channel.UpdateZones(avatar?["sockets"]?.AsArray(), avatar?["plugs"]?.AsArray());
                 var info = runtime?["device_channels"]?[device.Kind]?[channel.Name[..1]];
+                channel.ParameterHint = info?["parameter_hint"]?.GetValue<string>() ?? "等待读取模型 OSC 参数";
                 double percent = info?["strength_percentage"]?.GetValue<double>() ?? 0;
                 string samples = info?["sent_strengths"]?.ToJsonString() ?? "[0,0,0,0]";
                 string source = info?["trigger_type"]?.GetValue<string>() ?? "—";

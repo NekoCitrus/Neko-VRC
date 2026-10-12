@@ -10,6 +10,8 @@ class AdvancedChatboxManager:
         self.osc_client = None
         self.update_interval = float(self.settings.get('update_interval', 3.0))
         self.last_update_time = 0.0
+        self.last_status_text = None
+        self.last_device_keys = ()
 
         # 即使禁用 Chatbox，也要保留状态容器；ShockHandler 仍可能上报状态。
         self.channel_modes = {
@@ -91,87 +93,95 @@ class AdvancedChatboxManager:
                 device_kind=mode_info.get('device_kind', 'coyote'),
             )
 
-    def format_device_status(self, connections, shock_handlers=None):
-        """格式化精简设备状态。"""
-        if not connections:
-            return '...'
-
-        self._refresh_handler_status(shock_handlers)
-        status_lines = []
+    @staticmethod
+    def _device_states(connections, device_states=None):
+        """优先使用实际输出路由的快照；兼容旧连接调用。"""
+        if device_states is not None:
+            return tuple(device_states)
+        states = []
         for conn in connections:
-            getter = getattr(conn, 'get_device_states', None)
-            if getter is None:
-                status_lines.append(
-                    f"郊狼 MAX A:{conn.get_upper_strength('A')} B:{conn.get_upper_strength('B')}"
-                )
+            ready = getattr(conn, 'is_device_ready', None)
+            if (ready is not None and not ready()) or not getattr(conn, 'bound', True):
                 continue
-            for state in getter():
-                label = '负鼠' if state['device_kind'] == 'opossum' else '郊狼'
-                upper = state['upper_strength']
-                status_lines.append(
-                    f"{label} MAX A:{upper.get('A', 0)} B:{upper.get('B', 0)}"
-                )
-        if not status_lines:
-            return '...'
-        if len(status_lines) > 1:
-            return '\n'.join(status_lines)
-        return status_lines[0]
-
-    def format_detailed_status(self, connections, shock_handlers=None):
-        """格式化详细状态信息。"""
-        if not connections:
-            return '...'
-
-        self._refresh_handler_status(shock_handlers)
-        detailed_lines = []
-        for conn in connections:
             getter = getattr(conn, 'get_device_states', None)
-            states = getter() if getter is not None else ({
-                'slot_id': conn.uuid[:8],
-                'device_kind': 'coyote',
-                'strength': conn.strength,
-                'upper_strength': {
-                    'A': conn.get_upper_strength('A'),
-                    'B': conn.get_upper_strength('B'),
-                },
-            },)
-            for state in states:
-                label = '负鼠' if state['device_kind'] == 'opossum' else '郊狼'
-                channel_modes = self.channel_modes[state['device_kind']]
-                mode_a = self.get_mode_display_name(channel_modes['A']['mode'])
-                mode_b = self.get_mode_display_name(channel_modes['B']['mode'])
-                strength_pct_a = int(channel_modes['A']['strength_percentage'] * 100)
-                strength_pct_b = int(channel_modes['B']['strength_percentage'] * 100)
-                activity_a = self.get_activity_indicator(channel_modes['A'])
-                activity_b = self.get_activity_indicator(channel_modes['B'])
-                strength = state['strength']
-                upper = state['upper_strength']
-                detailed_lines.append(
-                    f"{label} {state['slot_id'][:8]}:\n"
-                    f"A: {strength.get('A', 0)}/{upper.get('A', 0)} "
-                    f"({strength_pct_a}%) {mode_a}{activity_a}\n"
-                    f"B: {strength.get('B', 0)}/{upper.get('B', 0)} "
-                    f"({strength_pct_b}%) {mode_b}{activity_b}"
-                )
-        if not detailed_lines:
-            return '...'
-        return '\n\n'.join(detailed_lines)
+            if getter is not None:
+                states.extend(getter())
+            else:
+                states.append({
+                    'slot_id': getattr(conn, 'uuid', ''),
+                    'device_kind': 'coyote',
+                    'strength': getattr(conn, 'strength', {}),
+                    'upper_strength': {
+                        channel: conn.get_upper_strength(channel) for channel in ('A', 'B')
+                    },
+                })
+        return tuple(states)
 
-    async def update_chatbox(self, connections, shock_handlers=None, detailed=False):
+    @staticmethod
+    def _format_limits(states):
+        lines = []
+        for state in states:
+            label = '负鼠' if state['device_kind'] == 'opossum' else '郊狼'
+            upper = state['upper_strength']
+            lines.append(f"{label} MAX A:{upper.get('A', 0)} B:{upper.get('B', 0)}")
+        return '\n'.join(lines)
+
+    def format_device_status(self, connections, shock_handlers=None, *, device_states=None):
+        """仅显示已连接设备的 A/B 强度上限。"""
+        self._refresh_handler_status(shock_handlers)
+        return self._format_limits(self._device_states(connections, device_states))
+
+    def format_detailed_status(self, connections, shock_handlers=None, *, device_states=None):
+        """格式化详细状态信息。"""
+        states = self._device_states(connections, device_states)
+        if len(states) != 1:
+            return self._format_limits(states)
+        self._refresh_handler_status(shock_handlers)
+        state = states[0]
+        label = '负鼠' if state['device_kind'] == 'opossum' else '郊狼'
+        channel_modes = self.channel_modes[state['device_kind']]
+        mode_a = self.get_mode_display_name(channel_modes['A']['mode'])
+        mode_b = self.get_mode_display_name(channel_modes['B']['mode'])
+        strength_pct_a = int(channel_modes['A']['strength_percentage'] * 100)
+        strength_pct_b = int(channel_modes['B']['strength_percentage'] * 100)
+        activity_a = self.get_activity_indicator(channel_modes['A'])
+        activity_b = self.get_activity_indicator(channel_modes['B'])
+        strength = state['strength']
+        upper = state['upper_strength']
+        return (
+            f"{label} {state['slot_id'][:8]}:\n"
+            f"A: {strength.get('A', 0)}/{upper.get('A', 0)} "
+            f"({strength_pct_a}%) {mode_a}{activity_a}\n"
+            f"B: {strength.get('B', 0)}/{upper.get('B', 0)} "
+            f"({strength_pct_b}%) {mode_b}{activity_b}"
+        )
+
+    async def update_chatbox(self, connections, shock_handlers=None, detailed=False, *, device_states=None):
         """按配置的间隔更新 Chatbox。"""
         if not self.enabled or self.osc_client is None:
             return
+        states = self._device_states(connections, device_states)
+        device_keys = tuple((state['device_kind'], state.get('slot_id', '')) for state in states)
+        status_text = (
+            self.format_detailed_status((), shock_handlers, device_states=states)
+            if detailed
+            else self.format_device_status((), shock_handlers, device_states=states)
+        )
         current_time = time.monotonic()
-        if current_time - self.last_update_time < self.update_interval:
+        if not status_text:
+            # 等待连接时不发送；断连后立即清空一次，不受刷新间隔限制。
+            if not self.last_status_text:
+                return
+        elif (
+            self.last_status_text and device_keys == self.last_device_keys
+            and current_time - self.last_update_time < self.update_interval
+        ):
             return
         self.last_update_time = current_time
-        status_text = (
-            self.format_detailed_status(connections, shock_handlers)
-            if detailed
-            else self.format_device_status(connections, shock_handlers)
-        )
         try:
             self.osc_client.send_message('/chatbox/input', [status_text, True, False])
+            self.last_status_text = status_text
+            self.last_device_keys = device_keys
             logger.debug(f'Chatbox更新: {status_text}')
         except Exception as exc:
             logger.warning(f'Chatbox更新失败: {exc}')
@@ -181,7 +191,9 @@ class AdvancedChatboxManager:
         if not self.enabled or self.osc_client is None:
             return
         try:
-            self.osc_client.send_message('/chatbox/input', [str(message), True, False])
+            text = str(message)
+            self.osc_client.send_message('/chatbox/input', [text, True, False])
+            self.last_status_text = text
             logger.debug(f'Chatbox自定义消息: {message}')
         except Exception as exc:
             logger.warning(f'Chatbox自定义消息发送失败: {exc}')
@@ -191,8 +203,8 @@ class AdvancedChatboxManager:
         if not self.enabled or self.osc_client is None:
             return
         try:
-            if notify:
-                self.send_custom_message('...')
+            if notify and self.last_status_text:
+                self.send_custom_message('')
             if notify and self.settings.get('set_avatar_parameter', True):
                 self.osc_client.send_message('/avatar/parameters/ChatboxEnable', 0.0)
             logger.info('Chatbox功能已清理')

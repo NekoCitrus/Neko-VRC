@@ -173,6 +173,16 @@ def sps_osc_bindings(trigger_type, zone_id):
     return tuple((f'{base}/{signal}', signal) for signal in signals)
 
 
+def has_plug_depth_parameters(parameter_paths, zone_id='*'):
+    for path in parameter_paths:
+        parts = path.strip('/').split('/')
+        if (len(parts) == 6 and parts[:4] == ['avatar', 'parameters', 'OGB', 'Pen']
+                and (zone_id == '*' or parts[4] == zone_id)
+                and parts[5] in ('PenSelf', 'PenOthers')):
+            return True
+    return False
+
+
 class _PenetratorLengthDetector:
     """Port of OGB's stable root/tip length estimator."""
 
@@ -242,6 +252,13 @@ class SPSDepthCalculator:
                         self.values.get(f'Pen{owner}NewTip'),
                     )
         return self.depth
+
+    def forget(self, signal):
+        """Drop an expired HTTP reading without discarding another live signal."""
+        self.values.pop(signal, None)
+        for owner in ('Self', 'Others'):
+            if signal in (f'Pen{owner}NewRoot', f'Pen{owner}NewTip'):
+                self.detectors[owner] = _PenetratorLengthDetector()
 
     def _new_socket_depth(self, owner):
         root = self.values.get(f'Pen{owner}NewRoot')

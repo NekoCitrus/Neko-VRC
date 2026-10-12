@@ -6,6 +6,8 @@
 
 > This document is translated by AI.
 
+Current release: **v2.0.0**, including the WPF UI, direct Bluetooth connections, four independent channel triggers, OSCQuery reading and fallback hints, and compact multi-device chatbox output.
+
 A small tool that reads SPS/OGB penetration depth from VRChat OSC and controls either a Coyote DG-LAB 3.0 or an Opossum vibration controller.
 
 > [!CAUTION]
@@ -54,7 +56,7 @@ Direct BLE has separate encoders for Coyote 2.0, Coyote 3.0, and Opossum V1. Coy
 
 Official protocols: [Coyote V2](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v2/README.md), [Coyote V3](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v3/README.md), [Opossum](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/opossum-vibrate-controller/README.md).
 
-Build with .NET 10 SDK and `requirements-build.txt`, then run `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`. Distribute the whole `dist/Neko-VRC-WPF/` directory. For source runs, build `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj` before launching `neko_vrc.py`. `--legacy-ui` explicitly selects the old Win32 UI.
+Build with .NET 10 SDK and `requirements-build.txt`, then run `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`. Distribute the whole `dist/Neko-VRC-v2.0.0/` directory. For source runs, build `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj` before launching `neko_vrc.py`. `--legacy-ui` explicitly selects the old Win32 UI.
 
 In App mode, Coyote and Opossum share a DG-LAB 4 APP Socket V4 connection with independent host `slotId` values. Operations are routed according to each device kind's selected connection. Opossum waveforms are normalized to the OVC fixed prefix and four vibration-amplitude bytes. See the official [dglab-kit](https://github.com/dungeonlab-open/dglab-kit).
 
@@ -73,6 +75,8 @@ Socket, Plug, and extra parameters/map events default to enabled for all channel
 The maximum current value wins and linearly scales that device channel's waveform amplitude. There is no manual trigger-mode selector.
 
 Socket and Plug can each target one named zone or **any currently active** zone. The application discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar and SPS parameter tree; `/avatar/change` only requests an immediate refresh.
+
+Availability checks use readable numeric parameters. PCS is suppressed only after valid Socket depth values have actually been read (zero is valid), not by declarations alone. Fresh OSCQuery values supplement live OSC, expire after 0.5 seconds, and cannot restore output during emergency stop. Each channel suggests available PCS/LMS fallbacks; if none of the four sources exist, it reports no usable Socket/Plug/PCS/LMS parameters. Hints never change the checkboxes automatically.
 
 Your own Socket and Plug interactions are included automatically: the maximum of `Self` and `Others` wins. Enable `Avatar Self Interact` in VRChat and ensure the avatar outputs the corresponding OGB self-contact depth parameters. Attraction without a depth signal does not trigger output. See the [OGB setup guide](https://github.com/OscToys/osc.toys/blob/main/docs/20-getting-started.mdx).
 
@@ -154,6 +158,8 @@ ws: # WebSocket service configuration
 
 ### Chatbox and control API settings
 
+Chatbox sends no text while waiting for a connection and clears its display when the last device disconnects. Each connected App or Bluetooth device gets one line with its effective A/B strength limits, without introductory text.
+
 Missing options are added automatically to the unified v2.0 configuration:
 
 ```yaml
@@ -178,10 +184,10 @@ The original map-integration endpoint `/api/v1/shock/<A|B|all>/<seconds>` accept
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-build.txt
 python -m unittest discover -v
-pyinstaller --clean --noconfirm neko_vrc.spec
+powershell -ExecutionPolicy Bypass -File build-wpf.ps1
 ```
 
-PyInstaller produces the console-free single file `dist\Neko-VRC.exe`. Configuration remains under the compatibility directory `%APPDATA%\ShockingVRChat\`, not beside the executable.
+The script builds a self-contained WPF frontend and a console-free Python backend, producing `dist\Neko-VRC-v2.0.0-win-x64.zip`. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration remains under `%APPDATA%\ShockingVRChat\`, not in the release directory.
 
 ## FAQ
 

@@ -1,7 +1,9 @@
 import errno
 import ipaddress
 import json
+import math
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +27,8 @@ class OSCQueryAvatarSnapshot:
     parameter_paths: tuple[str, ...]
     endpoint: str = ''
     numeric_parameter_paths: tuple[str, ...] | None = None
+    parameter_values: tuple[tuple[str, float], ...] = ()
+    observed_at: float = 0.0
 
 
 def _node_member(node, name, default=None):
@@ -33,7 +37,7 @@ def _node_member(node, name, default=None):
     return node.get(name, node.get(name.lower(), default))
 
 
-def parse_vrchat_avatar_node(document, endpoint=''):
+def parse_vrchat_avatar_node(document, endpoint='', observed_at=None):
     """Extract the current avatar ID and parameter paths from VRChat's /avatar node."""
     contents = _node_member(document, 'CONTENTS', {})
     if not isinstance(contents, dict) or not isinstance(contents.get('parameters'), dict):
@@ -49,14 +53,28 @@ def parse_vrchat_avatar_node(document, endpoint=''):
 
     paths = set()
     numeric_paths = set()
+    values = {}
 
     def walk(node):
         full_path = _node_member(node, 'FULL_PATH')
         if (isinstance(full_path, str) and full_path.startswith('/avatar/parameters/')
                 and _node_member(node, 'TYPE')):
             paths.add(full_path)
-            if _node_member(node, 'TYPE') in ('f', 'i', 'T', 'F'):
+            access = _node_member(node, 'ACCESS')
+            # Missing ACCESS remains compatible with older servers. Explicit
+            # write-only/no-value nodes cannot supply contact/depth readings.
+            readable = access is None or (type(access) is int and access in (1, 3))
+            if _node_member(node, 'TYPE') in ('f', 'i', 'T', 'F') and readable:
                 numeric_paths.add(full_path)
+                current = _node_member(node, 'VALUE')
+                if (isinstance(current, (list, tuple)) and len(current) == 1
+                        and isinstance(current[0], (bool, int, float))):
+                    try:
+                        number = float(current[0])
+                    except (OverflowError, ValueError):
+                        number = float('nan')
+                    if math.isfinite(number):
+                        values[full_path] = min(max(number, 0.0), 1.0)
         children = _node_member(node, 'CONTENTS', {})
         if isinstance(children, dict):
             for child in children.values():
@@ -68,13 +86,15 @@ def parse_vrchat_avatar_node(document, endpoint=''):
         parameter_paths=tuple(sorted(paths)),
         endpoint=endpoint,
         numeric_parameter_paths=tuple(sorted(numeric_paths)),
+        parameter_values=tuple(sorted(values.items())),
+        observed_at=time.perf_counter() if observed_at is None else observed_at,
     )
 
 
 class VRChatOSCQueryClient:
     """Discover VRChat's OSCQuery server and keep its current avatar snapshot fresh."""
 
-    def __init__(self, zeroconf, callback, poll_interval=3.0, request_timeout=1.5):
+    def __init__(self, zeroconf, callback, poll_interval=0.25, request_timeout=1.5):
         self.zeroconf = zeroconf
         self.callback = callback
         self.poll_interval = float(poll_interval)
@@ -89,6 +109,7 @@ class VRChatOSCQueryClient:
         self.last_fingerprint = None
         self.force_publish = False
         self.opener = build_opener(ProxyHandler({}))
+        self.last_values_observed_at = 0.0
 
     def start(self):
         self.stop_event.clear()
@@ -124,12 +145,13 @@ class VRChatOSCQueryClient:
     def _fetch(self, address, port):
         host = f'[{address}]' if ':' in address and not address.startswith('[') else address
         endpoint = f'http://{host}:{port}'
+        observed_at = time.perf_counter()
         try:
             with self.opener.open(f'{endpoint}/avatar', timeout=self.request_timeout) as response:
                 payload = response.read(4 * 1024 * 1024 + 1)
             if len(payload) > 4 * 1024 * 1024:
                 raise ValueError('OSCQuery /avatar 响应超过 4 MiB。')
-            return parse_vrchat_avatar_node(json.loads(payload.decode('utf-8')), endpoint)
+            return parse_vrchat_avatar_node(json.loads(payload.decode('utf-8')), endpoint, observed_at)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             logger.debug('OSCQuery 查询 {} 失败：{}', endpoint, exc)
             return None
@@ -165,10 +187,12 @@ class VRChatOSCQueryClient:
         fingerprint = (snapshot.endpoint, snapshot.avatar_id, snapshot.parameter_paths,
                        snapshot.numeric_parameter_paths)
         with self.lock:
-            if fingerprint == self.last_fingerprint and not self.force_publish:
+            fresh_values = bool(snapshot.parameter_values) and snapshot.observed_at > self.last_values_observed_at
+            if fingerprint == self.last_fingerprint and not self.force_publish and not fresh_values:
                 return
             self.force_publish = False
             self.last_fingerprint = fingerprint
+            self.last_values_observed_at = snapshot.observed_at
         try:
             self.callback(snapshot)
         except Exception:

@@ -6,6 +6,7 @@ import ipaddress
 import json
 import socket
 import sys
+import time
 import traceback
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from functools import wraps
@@ -409,6 +410,8 @@ class DeviceRuntime:
         self.oscquery = None
         self.current_avatar_id = ''
         self.current_avatar_endpoint = ''
+        self.last_avatar_metadata = None
+        self.last_avatar_change_time = 0.0
         self.router = DeviceRouter(settings)
 
     def _emit(self, event):
@@ -485,7 +488,14 @@ class DeviceRuntime:
         if self.oscquery is not None:
             self.oscquery.settings = settings
         if old_chatbox is not None:
-            old_chatbox.cleanup(notify=False)
+            same_endpoint = all(
+                old_chatbox.settings.get(key, default) == self.chatbox_manager.settings.get(key, default)
+                for key, default in (('osc_host', '127.0.0.1'), ('osc_port', 9000))
+            )
+            if self.chatbox_manager.enabled and same_endpoint:
+                self.chatbox_manager.last_status_text = old_chatbox.last_status_text
+                self.chatbox_manager.last_device_keys = old_chatbox.last_device_keys
+            old_chatbox.cleanup(notify=not self.chatbox_manager.enabled or not same_endpoint)
 
     def apply_settings(self, settings, timeout=10):
         if self.loop is None or not self.loop.is_running():
@@ -528,6 +538,7 @@ class DeviceRuntime:
             logger.warning('Ignored invalid /avatar/change OSC message: {}', args)
             return
         avatar_id = args[0].strip()
+        self.last_avatar_change_time = time.perf_counter()
         # A hidden/unknown ID can repeat across avatar changes. Clear the old
         # inputs immediately rather than waiting for identity-based snapshots.
         for handler in self.handlers:
@@ -556,11 +567,26 @@ class DeviceRuntime:
         return zones
 
     def _apply_avatar_snapshot(self, snapshot):
+        if snapshot.observed_at and snapshot.observed_at < self.last_avatar_change_time:
+            return
+        metadata = (snapshot.avatar_id, snapshot.endpoint, snapshot.parameter_paths,
+                    snapshot.numeric_parameter_paths)
+        if metadata == self.last_avatar_metadata:
+            # Live values may refresh without an avatar/catalog change. Avoid
+            # rescanning local files, rebuilding lists, or logging every poll.
+            if snapshot.endpoint:
+                paths = (snapshot.numeric_parameter_paths if snapshot.numeric_parameter_paths is not None
+                         else snapshot.parameter_paths)
+                for handler in self.handlers:
+                    if isinstance(handler, ShockHandler):
+                        handler.set_avatar_parameters(paths)
+            self._apply_query_values(snapshot)
+            return
         avatar_id = snapshot.avatar_id
         if (avatar_id, snapshot.endpoint) != (self.current_avatar_id, self.current_avatar_endpoint):
             for handler in self.handlers:
                 if isinstance(handler, ShockHandler):
-                    handler.reset_for_avatar_change()
+                    handler.reset_for_avatar_change(observed_at=snapshot.observed_at or None)
             self.current_avatar_id = avatar_id
             self.current_avatar_endpoint = snapshot.endpoint
         avatar = find_avatar_sps_config(avatar_id, APP_DIR)
@@ -575,7 +601,9 @@ class DeviceRuntime:
                 for item in avatar.plugs
             })
         if snapshot.endpoint:
-            query_zones = self._query_zones(snapshot.parameter_paths)
+            readable_paths = (snapshot.numeric_parameter_paths if snapshot.numeric_parameter_paths is not None
+                              else snapshot.parameter_paths)
+            query_zones = self._query_zones(readable_paths)
             sockets = tuple(
                 local_zones.get(
                     (SPS_SOCKET, zone_id),
@@ -628,6 +656,18 @@ class DeviceRuntime:
             len(sockets),
             len(plugs),
         )
+        self.last_avatar_metadata = metadata
+        self._apply_query_values(snapshot)
+
+    def _apply_query_values(self, snapshot):
+        if (self.router.paused or not snapshot.endpoint or self.dispatcher is None
+                or not snapshot.observed_at):
+            return
+        for address, value in snapshot.parameter_values:
+            for binding in self.dispatcher.handlers_for_address(address):
+                handler = getattr(binding.callback, '__self__', None)
+                if isinstance(handler, ShockHandler):
+                    handler.receive_query_value(address, binding.args, value, snapshot.observed_at)
 
     def _relay_packet(self, _size, _address):
         self.relay_packets += 1
@@ -667,8 +707,9 @@ class DeviceRuntime:
 
     async def _chatbox_task(self):
         while True:
-            connections = srv.get_ws_connections()[:1]
-            await self.chatbox_manager.update_chatbox(connections, self.handlers)
+            await self.chatbox_manager.update_chatbox(
+                (), self.handlers, device_states=self.router.device_states(),
+            )
             await asyncio.sleep(0.5)
 
     async def _main(self):

@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.request import Request, urlopen
 
 import yaml
@@ -362,6 +362,73 @@ class UDPRelayTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chatbox_uses_connected_app_and_bluetooth_routes(self):
+        settings = copy.deepcopy(DEFAULT_SETTINGS)
+        settings['connections']['opossum']['mode'] = 'bluetooth'
+        runtime = DeviceRuntime(settings)
+        runtime.chatbox_manager = SimpleNamespace(update_chatbox=AsyncMock())
+        coyote = {'slot_id': 'app-coyote', 'device_kind': 'coyote', 'upper_strength': {'A': 80, 'B': 70}}
+        ignored = {'slot_id': 'app-opossum', 'device_kind': 'opossum', 'upper_strength': {'A': 200, 'B': 200}}
+        opossum = {'slot_id': 'ble-opossum', 'device_kind': 'opossum', 'upper_strength': {'A': 60, 'B': 50}}
+        runtime.router.hosts['opossum'] = SimpleNamespace(connected=True, snapshot=lambda: opossum)
+        app = SimpleNamespace(uuid='app', get_device_states=lambda: [coyote, ignored])
+        with patch('srv.get_ws_connections', return_value=[app]), patch(
+            'shocking_vrchat.asyncio.sleep', side_effect=asyncio.CancelledError,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await runtime._chatbox_task()
+        runtime.chatbox_manager.update_chatbox.assert_awaited_once_with(
+            (), [], device_states=({**coyote, 'transport': 'app', 'connection_uuid': 'app'}, opossum),
+        )
+        runtime.router.hosts['opossum'].connected = False
+        with patch('srv.get_ws_connections', return_value=[]):
+            self.assertEqual(runtime.router.device_states(), ())
+
+    async def test_hot_save_preserves_display_for_later_disconnect_clear(self):
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS))
+        settings['chatbox'].update(enable=True, set_avatar_parameter=False)
+        old_client, new_client = Mock(), Mock()
+        with patch('srv.advanced_chatbox_manager.SimpleUDPClient', side_effect=[old_client, new_client]):
+            runtime = DeviceRuntime(settings)
+            runtime.dispatcher = runtime._build_dispatcher()
+            runtime.chatbox_manager.last_status_text = '郊狼 MAX A:80 B:70'
+            await runtime._apply_settings(copy.deepcopy(settings))
+        old_client.send_message.assert_not_called()
+        old_client._sock.close.assert_called_once()
+        await runtime.chatbox_manager.update_chatbox([])
+        new_client.send_message.assert_called_once_with('/chatbox/input', ['', True, False])
+        runtime.chatbox_manager.cleanup(notify=False)
+
+    async def test_disabling_chatbox_clears_previous_display(self):
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS))
+        settings['chatbox'].update(enable=True, set_avatar_parameter=False)
+        client = Mock()
+        with patch('srv.advanced_chatbox_manager.SimpleUDPClient', return_value=client):
+            runtime = DeviceRuntime(settings)
+            runtime.dispatcher = runtime._build_dispatcher()
+            runtime.chatbox_manager.last_status_text = '郊狼 MAX A:80 B:70'
+            updated = copy.deepcopy(settings)
+            updated['chatbox']['enable'] = False
+            await runtime._apply_settings(updated)
+        client.send_message.assert_called_once_with('/chatbox/input', ['', True, False])
+        client._sock.close.assert_called_once()
+        self.assertFalse(runtime.chatbox_manager.enabled)
+
+    async def test_changing_chatbox_endpoint_clears_old_destination(self):
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS))
+        settings['chatbox'].update(enable=True, set_avatar_parameter=False)
+        old_client, new_client = Mock(), Mock()
+        with patch('srv.advanced_chatbox_manager.SimpleUDPClient', side_effect=[old_client, new_client]):
+            runtime = DeviceRuntime(settings)
+            runtime.dispatcher = runtime._build_dispatcher()
+            runtime.chatbox_manager.last_status_text = '郊狼 MAX A:80 B:70'
+            updated = copy.deepcopy(settings)
+            updated['chatbox']['osc_port'] = settings['chatbox']['osc_port'] + 1
+            await runtime._apply_settings(updated)
+        old_client.send_message.assert_called_once_with('/chatbox/input', ['', True, False])
+        self.assertIsNone(runtime.chatbox_manager.last_status_text)
+        runtime.chatbox_manager.cleanup(notify=False)
+
     async def test_reconfigures_existing_handlers_and_dispatcher_in_place(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
@@ -384,6 +451,69 @@ class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OSCQueryServiceTests(unittest.TestCase):
+    def test_query_access_and_scalar_values_are_validated(self):
+        path = '/avatar/parameters/OGB/Pen/Locked/PenOthers'
+        for access in (None, 0, 1, 2, 3, -1, 5, True, '1'):
+            with self.subTest(access=access):
+                document = self.avatar_document()
+                leaf = document['CONTENTS']['parameters']['CONTENTS']['Depth']
+                if access is not None:
+                    leaf['ACCESS'] = access
+                snapshot = parse_vrchat_avatar_node(document, observed_at=10)
+                readable = access is None or (type(access) is int and access in (1, 3))
+                self.assertEqual(snapshot.parameter_paths, (path,))
+                self.assertEqual(snapshot.numeric_parameter_paths, (path,) if readable else ())
+                self.assertEqual(snapshot.parameter_values, ((path, 1.0),) if readable else ())
+                self.assertEqual(snapshot.observed_at, 10)
+        for value, expected in (([0], 0), ([True], 1), ([-2], 0), ([2], 1),
+                                (['1'], None), ([float('nan')], None),
+                                ([float('inf')], None), ([0, 1], None), ([], None)):
+            with self.subTest(value=value):
+                document = self.avatar_document()
+                document['CONTENTS']['parameters']['CONTENTS']['Depth']['VALUE'] = value
+                snapshot = parse_vrchat_avatar_node(document)
+                self.assertEqual(snapshot.parameter_values, () if expected is None else ((path, expected),))
+
+    def test_fresh_values_are_published_without_repeating_the_same_response(self):
+        published = []
+        client = VRChatOSCQueryClient(None, published.append)
+        first = parse_vrchat_avatar_node(self.avatar_document(), observed_at=10)
+        client._publish(first)
+        client._publish(first)
+        client._publish(parse_vrchat_avatar_node(self.avatar_document(), observed_at=11))
+        self.assertEqual(len(published), 2)
+
+    def test_write_only_socket_does_not_block_readable_pcs_on_locked_avatar(self):
+        settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS))
+        for kind in ('coyote', 'opossum'):
+            for channel in ('channel_a', 'channel_b'):
+                settings['dglab3'][kind][channel]['pcs_enabled'] = True
+        runtime = DeviceRuntime(settings)
+        runtime.dispatcher = runtime._build_dispatcher()
+        self.addCleanup(runtime.chatbox_manager.cleanup, notify=False)
+        document = self.avatar_document()
+        document['CONTENTS']['parameters']['CONTENTS'] = {
+            'Root': {'FULL_PATH': '/avatar/parameters/OGB/Orf/Locked/PenSelfNewRoot',
+                     'TYPE': 'f', 'ACCESS': 2, 'VALUE': [1]},
+            'Tip': {'FULL_PATH': '/avatar/parameters/OGB/Orf/Locked/PenSelfNewTip',
+                    'TYPE': 'f', 'ACCESS': 2, 'VALUE': [1]},
+            'PCS': {'FULL_PATH': PCS_PROXIMITY_ADDRESS, 'TYPE': 'f', 'ACCESS': 1, 'VALUE': [0.8]},
+        }
+        snapshot = parse_vrchat_avatar_node(document, 'http://127.0.0.1:19000')
+        async def apply():
+            try:
+                runtime._apply_avatar_snapshot(snapshot)
+                await asyncio.sleep(0)
+                for handler in runtime.handlers:
+                    self.assertFalse(handler.socket_depth_available)
+                    self.assertEqual(handler.current_strength_percentage, 0.8)
+                    self.assertIn('PCS 回退已启用', handler.parameter_hint)
+                    self.assertFalse(handler.parameter_availability['socket'])
+            finally:
+                for handler in runtime.handlers:
+                    await handler.stop_background_jobs()
+        asyncio.run(apply())
+
     def test_query_tree_does_not_announce_individually_disabled_inputs(self):
         service = self.make_service()
         for kind in ('coyote', 'opossum'):
@@ -514,25 +644,36 @@ class OSCQueryServiceTests(unittest.TestCase):
             client._publish(OSCQueryAvatarSnapshot('', (), endpoint))
         self.assertEqual(len(published), 2)
 
-    def test_anonymous_live_avatar_exposes_zones_without_using_metadata_values(self):
+    def test_anonymous_live_avatar_seeds_fresh_values_without_rebuilding_metadata(self):
         events = []
         runtime = DeviceRuntime(apply_basic_settings(
             copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS),
         ), event_callback=events.append)
-        runtime._build_dispatcher()
+        runtime.dispatcher = runtime._build_dispatcher()
         self.addCleanup(runtime.chatbox_manager.cleanup, notify=False)
         snapshot = parse_vrchat_avatar_node(self.avatar_document(), 'http://127.0.0.1:10001')
         async def apply():
             runtime._apply_avatar_snapshot(snapshot)
             await asyncio.sleep(0)
+            self.assertTrue(all(handler.get_mode_info()['is_active'] for handler in runtime.handlers))
+            runtime._apply_avatar_snapshot(snapshot)
+            await asyncio.sleep(0)
+            self.assertEqual(sum(event['type'] == 'avatar' for event in events), 1)
+            runtime.router.paused = True
+            paused = parse_vrchat_avatar_node(self.avatar_document(), snapshot.endpoint)
+            with patch.object(runtime.handlers[0], 'receive_query_value') as receive:
+                runtime._apply_avatar_snapshot(paused)
+                receive.assert_not_called()
+            runtime._avatar_change_handler('/avatar/change', '')
+            runtime._apply_avatar_snapshot(snapshot)
+            await asyncio.sleep(0)
+            self.assertFalse(any(handler.is_active for handler in runtime.handlers))
             for handler in runtime.handlers:
                 await handler.stop_background_jobs()
         asyncio.run(apply())
         event = next(event for event in events if event['type'] == 'avatar')
         self.assertEqual(event['avatar_name'], '当前 Avatar')
         self.assertEqual(event['plugs'], [{'zone_id': 'Locked', 'label': 'Locked'}])
-        for handler in runtime.handlers:
-            self.assertFalse(handler.get_mode_info()['is_active'])
 
     def test_avatar_change_resets_anonymous_avatar_before_query_finishes(self):
         runtime = DeviceRuntime(apply_basic_settings(
@@ -818,6 +959,14 @@ class V4ConnectionStateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceControllerTests(unittest.TestCase):
+    def setUp(self):
+        # Keep real loopback UDP/HTTP, but do not advertise test receivers to
+        # a running game or let its live avatar replace the synthetic fixtures.
+        for target in ('srv.oscquery.Zeroconf', 'srv.oscquery.ServiceBrowser'):
+            isolated = patch(target)
+            isolated.start()
+            self.addCleanup(isolated.stop)
+
     def test_real_udp_source_checkboxes_hot_update_without_restarting_runtime(self):
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
         disabled = basic['dglab3']['opossum']['channel_a']
@@ -896,7 +1045,7 @@ class ServiceControllerTests(unittest.TestCase):
         base = '/avatar/parameters/OGB/Orf/One/'
         document = {
             'CONTENTS': {'parameters': {'CONTENTS': {
-                'Root': {'FULL_PATH': base + 'PenSelfNewRoot', 'TYPE': 'f', 'VALUE': [1]},
+                'Root': {'FULL_PATH': base + 'PenSelfNewRoot', 'TYPE': 'f', 'VALUE': [0]},
                 'Tip': {'FULL_PATH': base + 'PenSelfNewTip', 'TYPE': 's', 'VALUE': ['invalid']},
             }}},
         }
@@ -927,10 +1076,11 @@ class ServiceControllerTests(unittest.TestCase):
             client.send_message(PCS_PROXIMITY_ADDRESS, 0.6)
             assert_depths(0.6, 0.6)
             document['CONTENTS']['parameters']['CONTENTS']['Tip']['TYPE'] = 'f'
+            document['CONTENTS']['parameters']['CONTENTS']['Tip']['VALUE'] = [0]
             apply_inventory()
-            assert_depths(0, 0)  # Metadata values must not drive output.
+            assert_depths(0, 0)  # Fresh zero-valued Root/Tip are valid evidence.
             client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
-            assert_depths(0, 0.9)  # A has valid depth, even before any contact.
+            assert_depths(0, 0.9)  # A has actual zero depth; B's selected zone is missing.
             for _ in range(4):
                 client.send_message(base + 'PenSelfNewRoot', 0.2)
                 client.send_message(base + 'PenSelfNewTip', 0.6)
@@ -1413,6 +1563,12 @@ class ServiceControllerTests(unittest.TestCase):
 
 
 class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        for target in ('srv.oscquery.Zeroconf', 'srv.oscquery.ServiceBrowser'):
+            isolated = patch(target)
+            isolated.start()
+            self.addCleanup(isolated.stop)
+
     def make_settings(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)

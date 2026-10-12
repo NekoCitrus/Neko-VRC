@@ -1,4 +1,5 @@
 import asyncio
+import math
 from loguru import logger
 
 class BaseHandler():
@@ -12,6 +13,8 @@ class BaseHandler():
         if isinstance(param, bool):
             param = 1 if param else 0
         elif isinstance(param, float):
+            if not math.isfinite(param):
+                raise ValueError('OSC 参数必须是有限数值。')
             param = min(max(param, 0.0), 1.0)
         elif isinstance(param, int):
             param = min(max(param, 0), 1)
