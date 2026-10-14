@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -130,12 +131,67 @@ public partial class MainWindow : Window
         }
     }
 
+    private static IEnumerable<DependencyObject> VisualDescendants(DependencyObject parent)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++) {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            yield return child;
+            foreach (var descendant in VisualDescendants(child)) yield return descendant;
+        }
+    }
+
+    private async Task ValidateZoneDropdownsAsync()
+    {
+        var boxes = VisualDescendants(PageArea).OfType<ComboBox>().Where(c => c.ItemsSource is IEnumerable<Zone>).ToArray();
+        if (boxes.Length != 4) throw new Exception("Expected Socket/Plug dropdowns for both channels.");
+        foreach (var box in boxes) {
+            var channel = (ChannelViewModel)box.DataContext;
+            bool socket = ReferenceEquals(box.ItemsSource, channel.SocketZones);
+            string expected = socket ? channel.SocketZone : channel.PlugZone;
+            if (box.SelectedValue as string != expected || box.SelectedItem is not Zone selected ||
+                selected.Name != (socket ? "Socket 部位二" : "Plug 部位一")) throw new Exception("Selected Socket/Plug label was not displayed.");
+            box.IsDropDownOpen = true;
+            await Dispatcher.InvokeAsync(() => UpdateLayout(), DispatcherPriority.Render);
+            await Task.Delay(100);
+            foreach (Zone zone in box.Items) {
+                var item = box.ItemContainerGenerator.ContainerFromItem(zone) as ComboBoxItem;
+                if (item == null || !VisualDescendants(item).OfType<TextBlock>().Any(t => t.Text == zone.Name)) throw new Exception("Dropdown zone label is missing: " + zone.Name);
+            }
+            if (channel.Name.StartsWith("A") && box.Template.FindName("PART_Popup", box) is System.Windows.Controls.Primitives.Popup popup && popup.Child is FrameworkElement content) {
+                var bitmap = new RenderTargetBitmap((int)Math.Ceiling(content.ActualWidth), (int)Math.Ceiling(content.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(content);
+                var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var file = File.Create(System.IO.Path.Combine(_smokeDir!, socket ? "socket-dropdown.png" : "plug-dropdown.png")); encoder.Save(file);
+            }
+            box.IsDropDownOpen = false;
+        }
+    }
+
     private async Task SmokeAsync()
     {
         await _client.CallAsync("bluetooth_check");
         _vm.PrepareSmokePorts(FreePort(), FreePort(), FreePort(), FreePort(true));
         await _vm.SaveAsync(); await _vm.DeviceActionAsync("start"); await _vm.PollAsync();
         if (_vm.Devices.Count != 2 || _vm.Devices.Any(d => d.Channels.Count != 2)) throw new Exception("通道数量错误。");
+        if (VisualDescendants(this).OfType<Button>().Any(button => Equals(button.Content, "启动服务"))) throw new Exception("Removed start-service button is still visible.");
+        // Simulate scan results without scanning/connecting physical hardware.
+        var scanDevice = _vm.Devices[0];
+        string serviceStatus = _vm.Status;
+        var pendingScan = new TaskCompletionSource<JsonArray>();
+        var scanTask = scanDevice.ScanAsync(() => pendingScan.Task);
+        if (scanDevice.ScanStatus != "扫描蓝牙设备…" || _vm.Status != serviceStatus) throw new Exception("Scan progress replaced service status.");
+        await _vm.PollAsync();
+        if (scanDevice.ScanStatus != "扫描蓝牙设备…") throw new Exception("Polling erased scan progress.");
+        pendingScan.SetResult(new JsonArray(
+            new JsonObject { ["device_kind"] = "coyote", ["address"] = "00:00:00:00:00:01", ["name"] = "测试郊狼", ["model"] = "coyote3" },
+            new JsonObject { ["device_kind"] = "opossum", ["address"] = "00:00:00:00:00:02", ["name"] = "测试负鼠", ["model"] = "opossum" }));
+        await scanTask;
+        if (scanDevice.Devices.Count != 1 || scanDevice.ScanStatus != "扫描完成，找到 1 台设备" || _vm.Status != serviceStatus || _vm.Devices[1].ScanStatus != "") throw new Exception("Scan result was not isolated per device.");
+        await scanDevice.ScanAsync(() => Task.FromResult(new JsonArray()));
+        if (!scanDevice.ScanStatus.StartsWith("未找到设备") || _vm.Status != serviceStatus) throw new Exception("Empty scan changed service status.");
+        await scanDevice.ScanAsync(() => Task.FromException<JsonArray>(new Exception("测试错误")));
+        if (scanDevice.ScanStatus != "扫描失败：测试错误" || _vm.Status != serviceStatus) throw new Exception("Scan failure changed service status.");
+        await scanDevice.ScanAsync(() => Task.FromResult(new JsonArray()));
         foreach (var device in _vm.Devices) foreach (var channel in device.Channels) {
             if (!channel.SocketEnabled || !channel.PlugEnabled || !channel.ExtraEnabled ||
                 channel.PcsEnabled != (device.Kind == "coyote") || channel.LmsEnabled != (device.Kind == "opossum")) throw new Exception("默认开关错误。");
@@ -154,8 +210,31 @@ public partial class MainWindow : Window
                 deviceChannels[channel.Name[..1]] = new JsonObject { ["parameter_hint"] = hints[hintIndex++] };
             channels[device.Kind] = deviceChannels;
         }
-        _vm.UpdateState(new JsonObject { ["service"] = "running", ["runtime"] = new JsonObject { ["device_channels"] = channels } });
+        var catalog = new JsonObject {
+            ["avatar_name"] = "下拉框测试 Avatar",
+            ["sockets"] = new JsonArray(
+                new JsonObject { ["zone_id"] = "Socket_One", ["label"] = "Socket 部位一" },
+                new JsonObject { ["zone_id"] = "Socket_Two", ["label"] = "Socket 部位二" }),
+            ["plugs"] = new JsonArray(new JsonObject { ["zone_id"] = "Plug_One", ["label"] = "Plug 部位一" }),
+        };
+        _vm.UpdateState(new JsonObject { ["service"] = "running", ["avatar"] = catalog, ["runtime"] = new JsonObject { ["device_channels"] = channels } });
         if (!_vm.Devices.SelectMany(d => d.Channels).Select(c => c.ParameterHint).SequenceEqual(hints)) throw new Exception("Parameter hints were not bound to the correct channels.");
+        foreach (var channel in _vm.Devices.SelectMany(d => d.Channels)) {
+            if (channel.SocketZones.Count != 3 || channel.PlugZones.Count != 2 ||
+                channel.SocketZones[2].Name != "Socket 部位二" || channel.PlugZones[1].Name != "Plug 部位一") throw new Exception("Backend zone_id/label catalog was not displayed.");
+            channel.SocketZone = "Socket_Two"; channel.PlugZone = "Plug_One";
+            channel.UpdateZones(null, null);
+            if (channel.SocketZone != "Socket_Two" || channel.PlugZone != "Plug_One" ||
+                !channel.SocketZones.Last().Name.EndsWith("（未检测到）")) throw new Exception("Missing configured zones were lost.");
+            channel.UpdateZones(catalog["sockets"]!.AsArray(), catalog["plugs"]!.AsArray());
+            var originalSocket = channel.SocketZones[2];
+            channel.UpdateZones(catalog["sockets"]!.AsArray(), catalog["plugs"]!.AsArray());
+            if (!ReferenceEquals(originalSocket, channel.SocketZones[2])) throw new Exception("Unchanged zone catalog was unnecessarily rebuilt.");
+            channel.SocketZone = null!; channel.PlugZone = null!; // WPF's transient deselection during collection changes.
+            var exported = channel.Export().basic;
+            if (exported["socket_zone"]!.GetValue<string>() != "Socket_Two" ||
+                exported["plug_zone"]!.GetValue<string>() != "Plug_One") throw new Exception("Selected zone IDs did not survive catalog refresh/export.");
+        }
         foreach (bool minimum in new[] { false, true }) {
             Width = minimum ? MinWidth : 1040; Height = minimum ? MinHeight : 820;
             foreach (string page in new[] { "general", "coyote", "opossum", "debug", "about" }) {
@@ -166,6 +245,7 @@ public partial class MainWindow : Window
                 bitmap.Render(this);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using var file = File.Create(System.IO.Path.Combine(_smokeDir!, page + (minimum ? "-minimum" : "") + ".png")); encoder.Save(file);
+                if (page == "coyote" && minimum) await ValidateZoneDropdownsAsync();
             }
         }
         // Exercise live persistence without terminating the backend session.
@@ -175,7 +255,7 @@ public partial class MainWindow : Window
         await Task.Delay(300); await _vm.PollAsync();
         if (!_vm.Status.Contains("已急停")) throw new Exception("独立急停事件未生效。");
         await _vm.DeviceActionAsync("resume");
-        File.WriteAllText(System.IO.Path.Combine(_smokeDir!, "result.txt"), "PASS: WPF theme/title bar, 5 pages at default/minimum sizes without clipping or outer scrollbars, parameter-hint channel binding, 11 copyright links, 4 channel defaults, named-pipe backend, service startup, hot save, stop/resume.\n");
+        File.WriteAllText(System.IO.Path.Combine(_smokeDir!, "result.txt"), "PASS: WPF theme/title bar, 5 pages at default/minimum sizes without clipping or outer scrollbars, per-device scan progress/results/errors independent of service status, Socket/Plug zone_id/label catalogs and selection persistence/export, parameter-hint channel binding, 11 copyright links, 4 channel defaults, named-pipe backend, service startup, hot save, stop/resume.\n");
         await FinishExitAsync(0);
     }
 }

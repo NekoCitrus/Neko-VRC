@@ -64,6 +64,49 @@ def free_tcp_port():
 
 
 class ConfigManagerTests(unittest.TestCase):
+    def test_default_config_uses_neko_roaming_without_creating_legacy_directory(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'APPDATA': root}):
+            manager = ConfigManager(app_dir=Path(root) / 'app')
+            manager.load()
+            self.assertEqual(manager.path, Path(root) / 'Neko-VRC' / 'settings-v2.0.yaml')
+            self.assertTrue(manager.path.is_file())
+            self.assertFalse((Path(root) / 'ShockingVRChat').exists())
+
+    def test_old_roaming_config_migrates_read_only_and_new_config_takes_priority(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'APPDATA': root}):
+            legacy = ConfigManager(app_dir=Path(root) / 'app', config_dir=Path(root) / 'ShockingVRChat')
+            settings, basic = legacy.load()
+            basic['dglab3']['opossum']['channel_b']['strength_limit'] = 71
+            legacy.save(settings, basic)
+            old_bytes = legacy.path.read_bytes()
+            manager = ConfigManager(app_dir=Path(root) / 'app')
+            migrated_settings, migrated_basic = manager.load()
+            self.assertEqual(manager.migrated_from, str(legacy.path))
+            self.assertEqual(migrated_settings['ws']['master_uuid'], settings['ws']['master_uuid'])
+            self.assertEqual(migrated_basic['dglab3']['opossum']['channel_b']['strength_limit'], 71)
+            self.assertEqual(legacy.path.read_bytes(), old_bytes)
+            self.assertEqual(list(legacy.config_dir.iterdir()), [legacy.path])
+            basic['dglab3']['opossum']['channel_b']['strength_limit'] = 30
+            legacy.save(settings, basic)
+            reloaded = ConfigManager(app_dir=Path(root) / 'app')
+            self.assertEqual(reloaded.load()[1]['dglab3']['opossum']['channel_b']['strength_limit'], 71)
+            self.assertIsNone(reloaded.migrated_from)
+
+    def test_explicit_config_override_does_not_import_legacy_roaming(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'APPDATA': root}):
+            old = ConfigManager(app_dir=Path(root) / 'app', config_dir=Path(root) / 'ShockingVRChat')
+            settings, basic = old.load()
+            basic['dglab3']['coyote']['channel_a']['strength_limit'] = 17
+            old.save(settings, basic)
+            manager = ConfigManager(app_dir=Path(root) / 'app', config_dir=Path(root) / 'isolated')
+            self.assertEqual(manager.load()[1]['dglab3']['coyote']['channel_a']['strength_limit'], 100)
+            self.assertIsNone(manager.migrated_from)
+
+    def test_default_config_without_appdata_uses_neko_under_home(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'APPDATA': ''}), patch('srv.config_manager.Path.home', return_value=Path(root)):
+            manager = ConfigManager(app_dir=Path(root) / 'app')
+            self.assertEqual(manager.config_dir, Path(root) / 'AppData' / 'Roaming' / 'Neko-VRC')
+
     def test_new_channel_source_switches_have_requested_device_defaults(self):
         with tempfile.TemporaryDirectory() as root:
             manager = ConfigManager(app_dir=root, config_dir=root)

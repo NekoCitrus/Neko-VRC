@@ -43,8 +43,9 @@ public sealed class ChannelViewModel : Observable
     public bool PcsEnabled { get; set; }
     public bool LmsEnabled { get; set; }
     public bool ExtraEnabled { get; set; }
-    public string SocketZone { get; set; }
-    public string PlugZone { get; set; }
+    private string _socketZone = "*", _plugZone = "*";
+    public string SocketZone { get => _socketZone; set { if (!string.IsNullOrEmpty(value)) Set(ref _socketZone, value); } }
+    public string PlugZone { get => _plugZone; set { if (!string.IsNullOrEmpty(value)) Set(ref _plugZone, value); } }
     public string Limit { get; set; }
     public string Waveform { get; set; }
     public string ExtraPaths { get; set; }
@@ -77,8 +78,9 @@ public sealed class ChannelViewModel : Observable
         static void Populate(ObservableCollection<Zone> items, string selected, JsonArray? zones) {
             var next = new List<Zone> { new("*", "任何正在触发的部位") };
             if (zones != null) foreach (JsonNode? zone in zones) {
-                string? id = zone?["id"]?.GetValue<string>();
-                if (id != null && next.All(z => z.Id != id)) next.Add(new(id, zone?["name"]?.GetValue<string>() ?? id));
+                string? id = zone?["zone_id"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(id) && next.All(z => z.Id != id))
+                    next.Add(new(id, zone?["label"]?.GetValue<string>() ?? id));
             }
             if (selected != "*" && next.All(z => z.Id != selected)) next.Add(new(selected, selected + "（未检测到）"));
             if (items.SequenceEqual(next)) return;
@@ -122,6 +124,8 @@ public sealed class DeviceViewModel : Observable
     } }
     private string _status = "未连接";
     public string Status { get => _status; set => Set(ref _status, value); }
+    private string _scanStatus = "";
+    public string ScanStatus { get => _scanStatus; private set => Set(ref _scanStatus, value); }
     public ICommand ScanCommand { get; }
     public ICommand ConnectCommand { get; }
     public ICommand DisconnectCommand { get; }
@@ -137,6 +141,22 @@ public sealed class DeviceViewModel : Observable
             await owner.SaveAsync(); await owner.DeviceActionAsync("connect", Kind);
         }), () => !owner.Busy);
         DisconnectCommand = new Command(_ => owner.Run(() => owner.DeviceActionAsync("disconnect", Kind)), () => !owner.Busy);
+    }
+
+    public async Task ScanAsync(Func<Task<JsonArray>> discover)
+    {
+        ScanStatus = "扫描蓝牙设备…";
+        try {
+            var results = await discover();
+            Devices.Clear();
+            foreach (JsonNode? item in results) {
+                if (item!["device_kind"]!.GetValue<string>() == Kind)
+                    Devices.Add(new(item["address"]!.GetValue<string>(), item["name"]!.GetValue<string>(), item["model"]!.GetValue<string>(), Kind));
+            }
+            SelectedDevice = Devices.FirstOrDefault(d => d.Address == Address) ?? Devices.FirstOrDefault();
+            ScanStatus = Devices.Count == 0 ? "未找到设备，请释放手机蓝牙连接并开启广播。" : $"扫描完成，找到 {Devices.Count} 台设备";
+        }
+        catch (Exception exc) { ScanStatus = "扫描失败：" + exc.Message; }
     }
 }
 
@@ -177,7 +197,6 @@ public sealed class MainViewModel : Observable
     public string ConfigPath { get; private set; } = "";
     public ICommand PageCommand { get; }
     public ICommand SaveCommand { get; }
-    public ICommand StartCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand ResumeCommand { get; }
     public event Action<JsonArray>? QrReady;
@@ -188,7 +207,6 @@ public sealed class MainViewModel : Observable
         _client = client;
         PageCommand = new Command(p => SelectPage(p?.ToString() ?? "general"));
         SaveCommand = new Command(_ => Run(SaveAsync), () => Ready && !Busy);
-        StartCommand = new Command(_ => Run(() => DeviceActionAsync("start")), () => Ready && !Busy);
         StopCommand = new Command(_ => { _client.EmergencyStop(); Status = "正在急停…"; }, () => Ready);
         ResumeCommand = new Command(_ => Run(() => DeviceActionAsync("resume")), () => Ready && !Busy);
         QrCommand = new Command(_ => Run(async () => {
@@ -259,18 +277,8 @@ public sealed class MainViewModel : Observable
         UpdateState(response["data"]!.AsObject());
     }
 
-    public async Task ScanAsync(DeviceViewModel device)
-    {
-        Status = "扫描蓝牙设备…";
-        var response = await _client.CallAsync("scan");
-        device.Devices.Clear();
-        foreach (JsonNode? item in response["data"]!.AsArray()) {
-            if (item!["device_kind"]!.GetValue<string>() == device.Kind)
-                device.Devices.Add(new(item["address"]!.GetValue<string>(), item["name"]!.GetValue<string>(), item["model"]!.GetValue<string>(), device.Kind));
-        }
-        device.SelectedDevice = device.Devices.FirstOrDefault(d => d.Address == device.Address) ?? device.Devices.FirstOrDefault();
-        Status = device.Devices.Count == 0 ? "未找到设备，请释放手机蓝牙连接并开启广播。" : "扫描完成";
-    }
+    public Task ScanAsync(DeviceViewModel device) => device.ScanAsync(async () =>
+        (await _client.CallAsync("scan"))["data"]!.AsArray());
 
     public async Task PollAsync()
     {

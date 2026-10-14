@@ -10,9 +10,8 @@ import yaml
 from srv import WAVEFORM_NAMES_BY_DEVICE
 
 
-# Keep the legacy data directory so existing users retain their settings and
-# SteamVR manifest when upgrading to the renamed application.
-APP_NAME = 'ShockingVRChat'
+APP_NAME = 'Neko-VRC'
+LEGACY_APP_NAME = 'ShockingVRChat'
 PRODUCT_NAME = 'Neko-VRC'
 CONFIG_FILE_VERSION = 'v2.0'
 CONFIG_FILENAME = f'settings-{CONFIG_FILE_VERSION}.yaml'
@@ -391,9 +390,12 @@ def format_endpoint(host, port):
 class ConfigManager:
     def __init__(self, app_dir=None, config_dir=None):
         self.app_dir = Path(app_dir) if app_dir else Path.cwd()
+        self.legacy_config_dir = None
         if config_dir is None:
             appdata = os.environ.get('APPDATA')
-            config_dir = Path(appdata) / APP_NAME if appdata else Path.home() / 'AppData' / 'Roaming' / APP_NAME
+            roaming = Path(appdata) if appdata else Path.home() / 'AppData' / 'Roaming'
+            config_dir = roaming / APP_NAME
+            self.legacy_config_dir = roaming / LEGACY_APP_NAME
         self.config_dir = Path(config_dir)
         self.path = self.config_dir / CONFIG_FILENAME
         self.migrated_from = None
@@ -413,12 +415,15 @@ class ConfigManager:
         return value
 
     def _find_legacy_files(self):
-        for version in ('v0.9', 'v0.8', 'v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
-            for base in (self.config_dir, self.app_dir):
+        # The old roaming directory is read-only migration input, never a
+        # destination. Explicit config directories remain isolated overrides.
+        candidates = tuple(dict.fromkeys(base for base in
+                           (self.config_dir, self.legacy_config_dir, self.app_dir) if base is not None))
+        for version in ('v2.0', 'v0.9', 'v0.8', 'v0.7', 'v0.6', 'v0.5', 'v0.4', 'v0.3'):
+            for base in candidates:
                 unified = base / f'settings-{version}.yaml'
                 if unified.exists():
                     return unified
-        candidates = (self.config_dir, self.app_dir)
         for base in candidates:
             advanced = base / 'settings-advanced-v0.2.yaml'
             basic = base / 'settings-v0.2.yaml'

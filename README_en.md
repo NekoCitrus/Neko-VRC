@@ -38,17 +38,17 @@ Each device kind has exactly one selected output route. App/Bluetooth mixed oper
 
 ### Start with SteamVR
 
-The **Start with SteamVR** checkbox uses an OpenVR application manifest to enable or disable SteamVR auto-start. Start SteamVR before changing this option and selecting **Save and apply**. The manifest is stored under `%APPDATA%\ShockingVRChat\steamvr\`.
+The **Start with SteamVR** checkbox uses an OpenVR application manifest to enable or disable SteamVR auto-start. Start SteamVR before changing this option and selecting **Save and apply**. The manifest is stored under `%APPDATA%\Neko-VRC\steamvr\`.
 
 This feature does not use Windows login startup and does not launch or poll for SteamVR. SteamVR may require one restart when it first reads the new manifest; the UI reports this and completes setup on the next launch.
 
 ## Configuration location
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v2.0.yaml
+%APPDATA%\Neko-VRC\settings-v2.0.yaml
 ```
 
-The log is stored as `neko-vrc.log` in the same directory. The legacy `%APPDATA%\ShockingVRChat` directory is retained for upgrade compatibility. v2.0 migrates older settings automatically.
+The log is stored as `neko-vrc.log` in the same directory. If the new directory has no configuration, settings are migrated from the legacy `%APPDATA%\ShockingVRChat` directory without changing its files. All subsequent writes use Neko-VRC; an existing new configuration takes priority.
 
 ## Device control
 
@@ -187,7 +187,7 @@ python -m unittest discover -v
 powershell -ExecutionPolicy Bypass -File build-wpf.ps1
 ```
 
-The script builds a self-contained WPF frontend and a console-free Python backend, producing `dist\Neko-VRC-v2.0.0-win-x64.zip`. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration remains under `%APPDATA%\ShockingVRChat\`, not in the release directory.
+The script builds a self-contained WPF frontend and a console-free Python backend, producing `dist\Neko-VRC-v2.0.0-win-x64.zip`. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration is stored under `%APPDATA%\Neko-VRC\`, not in the release directory.
 
 ## FAQ
 

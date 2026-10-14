@@ -37,7 +37,7 @@
 
 ### 跟随 SteamVR 启动
 
-“基本设置”中的“跟随 SteamVR 启动”复选框通过 OpenVR 应用清单启用或关闭 SteamVR 自动启动。更改该选项时请先启动 SteamVR，再点击“保存并应用”。清单保存在 `%APPDATA%\ShockingVRChat\steamvr\`；程序启动时会重新校验并修复 exe 移动后的路径。
+“基本设置”中的“跟随 SteamVR 启动”复选框通过 OpenVR 应用清单启用或关闭 SteamVR 自动启动。更改该选项时请先启动 SteamVR，再点击“保存并应用”。清单保存在 `%APPDATA%\Neko-VRC\steamvr\`；程序启动时会重新校验并修复 exe 移动后的路径。
 
 该功能不会使用 Windows 开机启动项，也不会自行启动或轮询 SteamVR。SteamVR 首次读取新清单时可能要求重启 SteamVR；窗口会显示相应提示，并在下一次启动时继续完成设置。
 
@@ -46,10 +46,10 @@
 配置固定保存在：
 
 ```text
-%APPDATA%\ShockingVRChat\settings-v2.0.yaml
+%APPDATA%\Neko-VRC\settings-v2.0.yaml
 ```
 
-日志保存在同目录的 `neko-vrc.log`。为兼容旧版本，配置目录继续使用 `%APPDATA%\ShockingVRChat`。首次运行 v2.0 会迁移旧配置。
+日志保存在同目录的 `neko-vrc.log`。新目录没有配置时，会从旧 `%APPDATA%\ShockingVRChat` 目录读取并迁移配置；旧文件保持不变，后续只向 Neko-VRC 目录写入。已有新配置优先，不会被旧配置覆盖。
 
 ## 设备控制方式
 
@@ -205,7 +205,7 @@ python -m unittest discover -v
 powershell -ExecutionPolicy Bypass -File build-wpf.ps1
 ```
 
-脚本构建自带 .NET 运行时的 WPF 前端及无控制台 Python 后台，生成 `dist\Neko-VRC-v2.0.0-win-x64.zip`。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置继续保存在 `%APPDATA%\ShockingVRChat\`，不写入发布目录。
+脚本构建自带 .NET 运行时的 WPF 前端及无控制台 Python 后台，生成 `dist\Neko-VRC-v2.0.0-win-x64.zip`。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置保存在 `%APPDATA%\Neko-VRC\`，不写入发布目录。
 
 ## FAQ
 

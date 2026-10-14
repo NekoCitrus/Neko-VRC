@@ -15,12 +15,16 @@
      <ComboBox ItemsSource="{Binding ConnectionModes}" SelectedItem="{Binding Mode}" Margin="0,0,12,0"/>
      <ComboBox Grid.Column="1" ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}" DisplayMemberPath="Label" ToolTip="{Binding Address}"/>
     </Grid>
-    <WrapPanel Margin="0,8,0,0">
+    <Grid Margin="0,8,0,0">
+     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <WrapPanel>
      <Button Content="扫描蓝牙" Command="{Binding ScanCommand}" Padding="12,6" Margin="0,0,8,0"/>
      <Button Content="连接" Command="{Binding ConnectCommand}" Padding="12,6" Margin="0,0,8,0"/>
      <Button Content="断开蓝牙" Command="{Binding DisconnectCommand}" Padding="12,6" Margin="0,0,8,0"/>
      <Button Content="App 扫码" Command="{Binding DataContext.QrCommand, RelativeSource={RelativeSource AncestorType=Window}}" Padding="12,6" Margin="0"/>
     </WrapPanel>
+     <TextBlock Grid.Column="1" Text="{Binding ScanStatus}" Margin="8,0,0,0" FontSize="12" TextWrapping="Wrap" ToolTip="{Binding ScanStatus}"/>
+    </Grid>
    </StackPanel>
   </Border>
   <ItemsControl Grid.Row="2" ItemsSource="{Binding Channels}">

@@ -94,7 +94,6 @@
      <TextBlock Text="{Binding Status}" Margin="0,0,0,8" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}"/>
      <WrapPanel>
       <Button Content="保存并应用" Command="{Binding SaveCommand}" Margin="0,0,8,0"/>
-      <Button Content="启动服务" Command="{Binding StartCommand}" Margin="0,0,8,0"/>
       <Button Content="急停" Command="{Binding StopCommand}" BorderBrush="{StaticResource Ink}" Margin="0,0,8,0"/>
       <Button Content="恢复" Command="{Binding ResumeCommand}" Margin="0,0,8,0"/>
       <Button Content="退出" Click="ExitApp" Margin="0"/>
