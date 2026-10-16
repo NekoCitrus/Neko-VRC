@@ -68,11 +68,13 @@ def load_avatar_sps_config(path):
         if zone is not None:
             zones[(zone.kind, zone.zone_id)] = zone
     sockets = tuple(sorted(
-        (zone for zone in zones.values() if zone.kind == SPS_SOCKET),
+        (zone for zone in zones.values() if zone.kind == SPS_SOCKET
+         and has_socket_depth_parameters(numeric_paths, zone.zone_id)),
         key=lambda item: item.label.casefold(),
     ))
     plugs = tuple(sorted(
-        (zone for zone in zones.values() if zone.kind == SPS_PLUG),
+        (zone for zone in zones.values() if zone.kind == SPS_PLUG
+         and has_plug_depth_parameters(numeric_paths, zone.zone_id)),
         key=lambda item: item.label.casefold(),
     ))
     return AvatarSPSConfig(

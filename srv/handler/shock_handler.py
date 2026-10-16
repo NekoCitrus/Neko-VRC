@@ -178,6 +178,8 @@ class ShockHandler(BaseHandler):
         if paths == self.avatar_parameter_paths:
             return
         self.avatar_parameter_paths = paths
+        # A capability change must not resurrect a previously gated fallback.
+        # Fresh PCS/LMS readings can re-arm only their own source.
         self.pcs_value = None
         self.lms_value = None
         if paths is not None:
@@ -186,12 +188,17 @@ class ShockHandler(BaseHandler):
             for key, calculator in tuple(self.calculators.items()):
                 trigger_type, zone = key
                 ogb_kind = 'Orf' if trigger_type == SPS_SOCKET else 'Pen'
-                if any(
-                    f'{OGB_PARAMETER_PREFIX}{ogb_kind}/{zone}/{signal}' not in paths
-                    for signal in calculator.values
-                ):
+                for signal in tuple(calculator.values):
+                    if f'{OGB_PARAMETER_PREFIX}{ogb_kind}/{zone}/{signal}' not in paths:
+                        calculator.forget(signal)
+                if not calculator.values:
                     self.calculators.pop(key)
                     self.calculator_inputs.pop(key, None)
+                elif self.calculator_inputs.get(key, ('', 0))[0] not in paths:
+                    signal = next(reversed(calculator.values))
+                    self.calculator_inputs[key] = (
+                        f'{OGB_PARAMETER_PREFIX}{ogb_kind}/{zone}/{signal}', calculator.values[signal],
+                    )
             self.extra_values = {path: value for path, value in self.extra_values.items() if path in paths}
         winner = self._winner()
         self._set_winner(winner)
@@ -513,8 +520,13 @@ class ShockHandler(BaseHandler):
                 continue
             if current_strength == last_strength == 0:
                 continue
-            source_frame = self.wave_frames[self.wave_frame_index]
-            self.wave_frame_index = (self.wave_frame_index + 1) % len(self.wave_frames)
+            if self.active_source == SOURCE_MAP:
+                # Legacy map events are a steady envelope, independent of the
+                # selected SPS waveform. Keep the preset phase for resumption.
+                source_frame = '0A0A0A0A64646464'
+            else:
+                source_frame = self.wave_frames[self.wave_frame_index]
+                self.wave_frame_index = (self.wave_frame_index + 1) % len(self.wave_frames)
             sent_frame = scale_coyote_frame(source_frame, current_strength)
             wave = json.dumps([sent_frame], separators=(',', ':'))
             last_strength = current_strength

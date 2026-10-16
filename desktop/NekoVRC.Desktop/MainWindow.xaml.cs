@@ -15,7 +15,6 @@ using System.Windows.Navigation;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using System.Windows.Shell;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 
@@ -29,10 +28,12 @@ public partial class MainWindow : Window
     private readonly Forms.NotifyIcon _tray = new();
     private bool _exiting, _polling;
     private readonly string? _smokeDir;
+    private readonly bool _previewOnly;
     public MainWindow(string[] args)
     {
         InitializeComponent();
-        _smokeDir = args.Length == 2 && args[0] == "--smoke-test" ? System.IO.Path.GetFullPath(args[1]) : null;
+        _previewOnly = args.Length == 2 && args[0] == "--preview-ui";
+        _smokeDir = args.Length == 2 && (args[0] == "--smoke-test" || _previewOnly) ? System.IO.Path.GetFullPath(args[1]) : null;
         _vm = new(_client); DataContext = _vm; _vm.QrReady += ShowQr;
         _tray.Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application;
         _tray.Text = "Neko-VRC";
@@ -63,7 +64,12 @@ public partial class MainWindow : Window
         _timer.Tick += async (_, _) => {
             if (_polling) return;
             _polling = true;
-            try { await _vm.PollAsync(); }
+            try {
+                // Keep the isolated preview backend alive without replacing
+                // its sample catalog with a running game's avatar snapshots.
+                if (_previewOnly) await _client.CallAsync("snapshot");
+                else await _vm.PollAsync();
+            }
             catch (Exception exc) { _timer.Stop(); _vm.Status = exc.Message; }
             finally { _polling = false; }
         };
@@ -85,9 +91,6 @@ public partial class MainWindow : Window
         _tray.Dispose(); Close(); Application.Current.Shutdown(code);
     }
     private void ExitApp(object sender, RoutedEventArgs e) => BeginExit();
-    private void MinimizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
-    private void ToggleMaximize(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-    private void CloseWindow(object sender, RoutedEventArgs e) => Close();
     private void OpenCredit(object sender, RequestNavigateEventArgs e)
     {
         if (e.Uri.Scheme != Uri.UriSchemeHttps) return;
@@ -125,8 +128,13 @@ public partial class MainWindow : Window
             if (bounds.Left < -1 || bounds.Top < -1 || bounds.Right > parent.ActualWidth + 1 || bounds.Bottom > parent.ActualHeight + 1)
                 throw new Exception($"Layout overflow: {child.GetType().Name} {bounds} in {parent.GetType().Name} {parent.RenderSize}");
             // Editors and dropdowns may scroll internally; the page itself must not.
-            if (child is TextBox || child is ComboBox || child is Button || child is CheckBox || child is TextBlock) continue;
-            if (child is ScrollViewer) throw new Exception("Unexpected page scrollbar.");
+            if (child is TextBox || child is ComboBox || child is Button || child is CheckBox || child is TextBlock || child is Expander) continue;
+            if (child is ScrollViewer scroll) {
+                if (!Equals(scroll.Tag, "OptionalChannelScroll")) throw new Exception("Unexpected page scrollbar.");
+                if (scroll.ComputedVerticalScrollBarVisibility == Visibility.Visible &&
+                    !VisualDescendants(scroll).OfType<Expander>().Any(e => e.IsExpanded)) throw new Exception("Collapsed channel settings should fit without a scrollbar.");
+                continue;
+            }
             ValidateLayout(child);
         }
     }
@@ -196,8 +204,8 @@ public partial class MainWindow : Window
             if (!channel.SocketEnabled || !channel.PlugEnabled || !channel.ExtraEnabled ||
                 channel.PcsEnabled != (device.Kind == "coyote") || channel.LmsEnabled != (device.Kind == "opossum")) throw new Exception("默认开关错误。");
         }
-        if (((SolidColorBrush)Foreground).Color != Color.FromRgb(250, 230, 135) || ((SolidColorBrush)Background).Color != Colors.Black) throw new Exception("主题颜色错误。");
-        if (WindowStyle != WindowStyle.None || WindowChrome.GetWindowChrome(this)?.CaptionHeight != 32) throw new Exception("Unexpected native title bar.");
+        if (TryFindResource("DefaultComboBoxStyle") is not System.Windows.Style || TryFindResource("CardBackgroundFillColorDefaultBrush") is not Brush) throw new Exception("Fluent theme resources were not loaded.");
+        if (WindowStyle != WindowStyle.SingleBorderWindow || ResizeMode != ResizeMode.CanResize || AllowsTransparency) throw new Exception("Native window frame was not preserved.");
         if (_vm.Credits.Count != 11 || _vm.Credits.Any(c => !Uri.TryCreate(c.Url, UriKind.Absolute, out var uri) || uri.Scheme != "https")) throw new Exception("Invalid copyright links.");
         // Synthetic catalog hints only: never inject trigger values or connect
         // hardware. Verify the backend-state binding and representative widths.
@@ -235,6 +243,10 @@ public partial class MainWindow : Window
             if (exported["socket_zone"]!.GetValue<string>() != "Socket_Two" ||
                 exported["plug_zone"]!.GetValue<string>() != "Plug_One") throw new Exception("Selected zone IDs did not survive catalog refresh/export.");
         }
+        // ThemeMode's code API is experimental; confine it to this preview test.
+#pragma warning disable WPF0001
+        foreach (var theme in new[] { ThemeMode.Light, ThemeMode.Dark }) {
+        ThemeMode = theme;
         foreach (bool minimum in new[] { false, true }) {
             Width = minimum ? MinWidth : 1040; Height = minimum ? MinHeight : 820;
             foreach (string page in new[] { "general", "coyote", "opossum", "debug", "about" }) {
@@ -244,10 +256,19 @@ public partial class MainWindow : Window
                 var bitmap = new RenderTargetBitmap((int)ActualWidth, (int)ActualHeight, 96, 96, PixelFormats.Pbgra32);
                 bitmap.Render(this);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                using var file = File.Create(System.IO.Path.Combine(_smokeDir!, page + (minimum ? "-minimum" : "") + ".png")); encoder.Save(file);
+                using var file = File.Create(System.IO.Path.Combine(_smokeDir!, (theme == ThemeMode.Dark ? "dark-" : "light-") + page + (minimum ? "-minimum" : "") + ".png")); encoder.Save(file);
                 if (page == "coyote" && minimum) await ValidateZoneDropdownsAsync();
+                if (page is "coyote" or "opossum") {
+                    foreach (var expander in VisualDescendants(PageArea).OfType<Expander>()) expander.IsExpanded = true;
+                    await Dispatcher.InvokeAsync(() => UpdateLayout(), DispatcherPriority.Render);
+                    ValidateLayout(PageArea);
+                    foreach (var expander in VisualDescendants(PageArea).OfType<Expander>()) expander.IsExpanded = false;
+                }
             }
         }
+        }
+        ThemeMode = ThemeMode.System;
+#pragma warning restore WPF0001
         // Exercise live persistence without terminating the backend session.
         _vm.Devices[0].Channels[0].SocketEnabled = false;
         await _vm.SaveAsync();
@@ -255,7 +276,16 @@ public partial class MainWindow : Window
         await Task.Delay(300); await _vm.PollAsync();
         if (!_vm.Status.Contains("已急停")) throw new Exception("独立急停事件未生效。");
         await _vm.DeviceActionAsync("resume");
-        File.WriteAllText(System.IO.Path.Combine(_smokeDir!, "result.txt"), "PASS: WPF theme/title bar, 5 pages at default/minimum sizes without clipping or outer scrollbars, per-device scan progress/results/errors independent of service status, Socket/Plug zone_id/label catalogs and selection persistence/export, parameter-hint channel binding, 11 copyright links, 4 channel defaults, named-pipe backend, service startup, hot save, stop/resume.\n");
+        File.WriteAllText(System.IO.Path.Combine(_smokeDir!, "result.txt"), "PASS: native window frame, Fluent light/dark themes, 5 pages at default/minimum sizes, expandable custom parameters, scan status isolation, Socket/Plug catalogs and selection persistence/export, 11 copyright links, 4 channel defaults, named-pipe backend, service startup, hot save, stop/resume.\n");
+        if (_previewOnly) {
+            _vm.Devices[0].Channels[0].SocketEnabled = true;
+            _vm.Background = false;
+            _vm.SelectPage("general");
+            _vm.Status = "界面预览 · 使用隔离配置，未连接设备";
+            Width = 1120; Height = 860;
+            _timer.Start();
+            return;
+        }
         await FinishExitAsync(0);
     }
 }

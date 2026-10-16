@@ -1,9 +1,9 @@
 ﻿# Neko-VRC
-[基本设置](assets/screenshots/general.png) · [郊狼 A/B](assets/screenshots/coyote.png) · [负鼠 A/B](assets/screenshots/opossum.png) · [运行调试](assets/screenshots/debug.png) · [版权信息](assets/screenshots/about.png)
+[基本设置](assets/screenshots/general.png) · [郊狼设置](assets/screenshots/coyote.png) · [负鼠设置](assets/screenshots/opossum.png) · [运行调试](assets/screenshots/debug.png) · [版权信息](assets/screenshots/about.png)
 
 [English version](README_en.md)
 
-当前版本：**v2.0.0**。包含 WPF 界面、电脑直连蓝牙、独立四通道触发、OSCQuery 参数读取与回退提示，以及精简的多设备 chatbox 显示。
+当前版本：**v2.0.0**。源码默认前端已改为 WinUI 3；包含电脑直连蓝牙、独立四通道触发、OSCQuery 参数读取与回退提示，以及精简的多设备 chatbox 显示。上方截图为旧版界面。
 
 一个通过 VRChat OSC 读取 Avatar SPS/OGB 插入深度，并联动郊狼 DG-LAB 3.0 或负鼠振动控制器的小工具。
 
@@ -15,25 +15,29 @@
 ## 使用方式
 
 1. 前往 [本项目 Release](https://github.com/NekoCitrus/Neko-VRC/releases) 下载最新版本的 Neko-VRC
-2. 完整解压发布包，运行 `Neko-VRC.exe`。WPF 窗口使用黑色背景与 `#FAE687` 文字，自动启动后台服务；无需另装 Python 或 .NET。
-3. 在“郊狼 A/B”和“负鼠 A/B”中勾选各通道的触发来源，并设置部位、参数、波形和强度上限。
+2. 完整解压发布包，运行 `Neko-VRC.exe`。WinUI 3 界面跟随 Windows 浅色 / 深色主题，自动启动后台服务；无需另装 Python、.NET 或 Windows App Runtime。Windows 11 使用系统窗口圆角，Windows 10 外观随系统能力降级。
+3. 在“郊狼设置”和“负鼠设置”中勾选各通道的触发来源，并设置部位、参数、波形和强度上限。
 4. 点击“保存并应用”。已有 APP 连接不会断开。首次联网时如弹出 Windows 防火墙提示，请选择允许。
-5. 每类设备分别选择 **App** 或 **蓝牙直连**。App 模式使用 DG-LAB 4 APP 的 Socket 扫码；直连模式点击“扫描蓝牙”、选择主机，再点击“连接”。连接前请释放手机对该主机的蓝牙连接。
+5. 每类设备分别选择 **App** 或 **蓝牙直连**，新配置默认蓝牙直连，已保存的连接方式不会被覆盖。App 模式使用 DG-LAB 4 APP 的 Socket 扫码；直连模式点击“扫描蓝牙”、选择主机，再点击“连接”。连接前请释放手机对该主机的蓝牙连接。
 6. 如勾选“关闭主窗口后继续在系统托盘运行”，关闭窗口不会停止服务；可从托盘菜单重新打开或退出。
 
 ## 桌面窗口
 
-- **基本设置**：Chatbox、后台运行与 SteamVR 跟随启动。程序通过 OSCQuery 供 VRChat 自动发现，无需额外分流软件。
-- **郊狼 A/B**：分别设置 Socket、Plug、额外参数、郊狼官方波形和强度上限。
-- **负鼠 A/B**：使用独立设置和负鼠官方波形。
-- **运行调试**：显示触发来源、比例、发送波形幅值、有效上限和设备反馈；蓝牙设备还显示电量。
+- **基本设置**：浅色 / 深色 / 跟随系统（切换即生效并自动保存，无需点击保存）、Chatbox、后台运行与 SteamVR 跟随启动。程序通过 OSCQuery 供 VRChat 自动发现，无需额外分流软件。
+- **郊狼设置**：分别设置 A/B 的插座深度（Socket）、插头深度（Plug）、额外参数、波形和强度上限。首项“纯粹”为新配置默认值，不叠加预设波形起伏，持续按当前计算比例输出；保留设备所需脉冲格式，并受原有上限限制。已有波形选择不变。
+- **负鼠设置**：使用独立 A/B 设置和负鼠官方波形。
+- **运行调试**：只显示打印日志，日志框随窗口伸缩。设备连接状态与电量在各自设置页查看。
 - **版权信息**：显示项目、代码来源、前端贡献者与开源许可。
 
 程序当前接受一个 DG-LAB APP 连接，但会同时控制该 APP 上报的所有受支持郊狼与负鼠槽位。
 
+每个通道的触发项分为深度与部位、PCS/LMS 回退、参数/地图事件三列。强度上限使用无刻度和端点数字的 0～200 整数滑块，与输入框双向同步，波形选择栏保持紧凑。上限等设备设置仍需点击“保存并应用”；主题独立即时保存，不重启服务或应用其他未保存设置。
+
 郊狼和负鼠可以分别选择不同的连接方式；同一类设备只向选中的连接路径输出。蓝牙模式每类设备连接一台主机，App 模式仍支持多槽位。保存通道设置不会断开现有连接；改变连接方式或蓝牙地址时，会先清除旧路径输出并断开旧蓝牙设备，需要再手动连接。
 
-“急停”停止所有输出，点击“恢复”后重新接收触发。首次连接、重连和输入过期时从零输出开始，不恢复旧波形。断线情况下无法保证归零指令到达硬件，请使用主机实体停止按钮。
+“暂停”停止所有输出，点击“恢复”后重新接收触发。首次连接、重连和输入过期时从零输出开始，不恢复旧波形。断线情况下无法保证归零指令到达硬件，请使用主机实体停止按钮。
+
+窗口默认尺寸为 940 × 648，最小尺寸为 880 × 640（随 DPI 缩放）。标题右侧固定显示“保存并应用 / 暂停 / 恢复”，服务状态、参数提示与 Avatar 名称位于按钮同一行左侧，长名称省略并可悬停查看。主窗口不再提供重复的“退出”按钮。扫码按钮保留在基本设置和设备连接卡片，扫描 / 连接 / 断开也保留在设备连接卡片。标题工具区高 36，默认折叠的设备设置完整显示，底部与左侧“关于与版权”对齐，设置卡片和导航栏保持紧凑。保留原生切页动画与左侧蓝条动画；每个设备页绑定自己的设备数据，避免退出动画中连接卡片单独残留。关闭退出时立即隐藏窗口，在后台完成设备和网络清理；启用托盘运行时关闭仍只进入托盘，可从托盘菜单退出。
 
 ### 跟随 SteamVR 启动
 
@@ -61,7 +65,24 @@ App 模式下，郊狼与负鼠可经同一条 DG-LAB 4 APP Socket V4 连接控�
 
 ### 源码构建
 
-准备 .NET 10 SDK 与 Python 环境，安装 `requirements-build.txt` 后运行 `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`。v2.0.0 输出目录为 `dist/Neko-VRC-v2.0.0/`，必须完整分发，不能只复制前端 exe。源码启动先构建 `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj`，再运行 `neko_vrc.py`；旧 Win32 界面仅保留为显式 `--legacy-ui` 回退入口。
+在 Windows 上准备 .NET 10 SDK、Windows SDK（10.0.26100.0）与 Python 环境，安装 `requirements-build.txt` 后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build-winui.ps1
+```
+
+输出目录为 `products/v2.0.0/Neko-VRC-WinUI-win-x64/`，压缩包为 `products/v2.0.0/Neko-VRC-WinUI-v2.0.0-win-x64.zip`。成品按版本保存在 `products/`，后台编译中间文件保存在 `build/`；原 `dist/` 保留历史产物，后续标准构建不再往里面写入。这是免安装 x64 包，必须完整分发，不能只复制前端 exe。
+
+源码调试：
+
+```powershell
+.tools\dotnet\dotnet.exe build desktop/NekoVRC.WinUI/NekoVRC.WinUI.csproj -p:Platform=x64
+.venv\Scripts\python.exe neko_vrc.py
+```
+
+WinUI 3 使用原生 `NavigationView`（选中指示条动画）、`TitleBar` 和 Toolkit 设置卡片；布局参考 [WSL Settings](https://github.com/microsoft/WSL/tree/master/src/windows/wslsettings) 与 [WinUI Gallery](https://github.com/microsoft/WinUI-Gallery)。导航与内容共用背景，窗口按钮由 Windows 绘制，额外参数默认折叠。第三方许可见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
+
+原 WPF 工程保留：`build-wpf.ps1` 构建旧前端；源码启动加 `--wpf-ui` 显式选用已构建的 WPF 前端。`--legacy-ui` 选用更早的 Win32 前端。新构建不会覆盖已有 WPF 发布目录。
 
 一般设置，以及郊狼/负鼠各自的 A/B 触发、部位、波形和强度上限，建议直接在窗口修改。WebSocket 或 Web 服务端口等高级选项仍可在 YAML 中修改；手动修改 YAML 后请从托盘退出程序并重新打开。
 
@@ -83,7 +104,11 @@ App 模式下，郊狼与负鼠可经同一条 DG-LAB 4 APP Socket V4 连接控�
 
 Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”部位。程序通过 OSCQuery 读取当前 Avatar 和 SPS 部位；`/avatar/change` 仅用于要求立即刷新。
 
-仅可读的数值参数参与可用性判断。Socket 回退判定以实际读到的有效深度信号为准，零值也有效；仅声明了参数不会阻止 PCS 回退。OSCQuery 当前值用于补充实时 OSC，超过 0.5 秒失效，急停时不用于恢复输出。各通道会提示可启用的 PCS/LMS 回退；这两种参数也不存在时显示“无可用的 Socket、Plug、PCS、LMS 参数”。提示不会自动修改复选框。
+仅可读的数值参数参与可用性判断。部位列表及数量仅包含可计算深度的插座/插头：完整同部位同来源 Root/Tip 对或直接深度，不计 Touch/Frot、半对和不可读信号。Socket 回退判定以实际读到的有效深度信号为准，零值也有效；仅声明了参数不会阻止 PCS 回退。OSCQuery 当前值用于补充实时 OSC，超过 0.5 秒失效，暂停时不用于恢复输出。
+
+参数提示统一放在顶部服务状态右侧，不再在每个通道重复显示。尚未发现模型时提示“等待读取模型 OSC 参数”；缺少深度且存在对应回退参数时推荐使用 PCS/LMS；深度和回退均不存在时提示“无任何可用插座/插头参数”。提示不会自动修改复选框。PCS、LMS 和参数/地图事件后的问号可悬停查看说明。
+
+游戏内关闭 LMS、LMS 归零或超时不会清除其他仍有效的 SPS 深度；参数目录变化仅移除消失的信号。cheese 地图事件使用不叠加预设起伏的纯粹输出，受各设备独立上限限制，事件结束后恢复 SPS 所选波形。
 
 自身 Socket 与自身 Plug 交互同样参与计算，`Self` 与 `Others` 取最大值，无需额外开关。请在 VRChat 中启用 `Avatar Self Interact`，并确保模型输出自身接触的 OGB 深度参数；只有吸附而没有深度信号时不会触发。参见 [OGB 设置说明](https://github.com/OscToys/osc.toys/blob/main/docs/20-getting-started.mdx)。
 
@@ -202,10 +227,10 @@ api:
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-build.txt
 python -m unittest discover -v
-powershell -ExecutionPolicy Bypass -File build-wpf.ps1
+powershell -ExecutionPolicy Bypass -File build-winui.ps1
 ```
 
-脚本构建自带 .NET 运行时的 WPF 前端及无控制台 Python 后台，生成 `dist\Neko-VRC-v2.0.0-win-x64.zip`。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置保存在 `%APPDATA%\Neko-VRC\`，不写入发布目录。
+脚本构建自带运行时的 WinUI 3 前端及无控制台 Python 后台，生成 `products\v2.0.0\Neko-VRC-WinUI-v2.0.0-win-x64.zip`，并使用隔离配置验证页面绑定、退出按钮和系统关闭。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置保存在 `%APPDATA%\Neko-VRC\`，不写入发布目录。WPF 回退构建同样输出到 `products\v2.0.0\`，文件名包含 `WPF`。
 
 ## FAQ
 
@@ -218,7 +243,7 @@ powershell -ExecutionPolicy Bypass -File build-wpf.ps1
 ### 应该如何设置上限
 
 - 建议通过郊狼 APP 内的被控设置进行调整，程序将跟随。
-- 请在“郊狼 A/B”或“负鼠 A/B”页面调整对应通道的强度上限，然后保存并应用。
+- 请在“郊狼设置”或“负鼠设置”页面调整对应通道的强度上限，然后保存并应用。
 - 为保证强度自动跟随自动运行，请确认郊狼APP内 菜单-被控设置 中，两个通道的强度上限初始值（最小值）大于等于 1。
 
 ### 想用同一个 SPS 部位同时触发两个通道
@@ -244,8 +269,8 @@ powershell -ExecutionPolicy Bypass -File build-wpf.ps1
 
 ### 为什么强度一直是最大可用值
 
-- 每台郊狼的通道强度取自身 `intensityMax` 与“郊狼 A/B”页面对应上限的较小值；负鼠使用“负鼠 A/B”页面中的独立上限。
-- SPS 插入深度 `0～1` 线性缩放波形幅值；运行调试中会分别显示深度和最近发送给 APP 的四个波形强度采样值（`0～100`）。
+- 每台郊狼的通道强度取自身 `intensityMax` 与“郊狼设置”页面对应上限的较小值；负鼠使用“负鼠设置”页面中的独立上限。
+- SPS 插入深度 `0～1` 线性缩放波形幅值；“纯粹”将每个采样值设为当前计算比例 × 100，不叠加预设起伏。设备强度上限与该实时比例是独立的。
 
 ### APP 扫码无法连接/连接超时
 

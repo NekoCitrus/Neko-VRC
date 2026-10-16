@@ -1,0 +1,75 @@
+<UserControl x:Class="NekoVRC.WinUI.Views.DeviceView"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+ <ScrollViewer Tag="PageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+  <StackPanel Spacing="6">
+   <toolkit:SettingsCard Header="连接" Description="{Binding Status}" ContentAlignment="Vertical" HorizontalContentAlignment="Stretch" Padding="12,8" MinHeight="52">
+    <StackPanel Spacing="6">
+     <Grid ColumnSpacing="8">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <ComboBox ItemsSource="{Binding ConnectionModes}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding Mode, Mode=TwoWay}" HorizontalAlignment="Stretch" AutomationProperties.Name="连接方式"/>
+      <ComboBox Grid.Column="1" ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice, Mode=TwoWay}" DisplayMemberPath="Label" HorizontalAlignment="Stretch" AutomationProperties.Name="蓝牙设备"/>
+     </Grid>
+     <Grid ColumnSpacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <StackPanel x:Name="ConnectionActions" Orientation="Horizontal" Spacing="8">
+       <Button Content="扫描蓝牙" Command="{Binding ScanCommand}"/>
+       <Button Content="连接" Command="{Binding ConnectCommand}"/>
+       <Button Content="断开" Command="{Binding DisconnectCommand}"/>
+       <Button Content="App 扫码" Command="{Binding QrCommand}"/>
+      </StackPanel>
+      <TextBlock Grid.Column="1" Text="{Binding ScanStatus}" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"/>
+     </Grid>
+    </StackPanel>
+   </toolkit:SettingsCard>
+   <ItemsControl ItemsSource="{Binding Channels}">
+    <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Spacing="6"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate><DataTemplate>
+     <toolkit:SettingsCard Header="{Binding Name}" ContentAlignment="Vertical" HorizontalContentAlignment="Stretch" Padding="12,8" MinHeight="52">
+      <StackPanel Spacing="6">
+       <Grid x:Name="TriggerColumns" ColumnSpacing="20">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <Grid x:Name="DepthSelectors" ColumnSpacing="6" RowSpacing="6">
+         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+         <Grid.RowDefinitions><RowDefinition Height="32"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+         <CheckBox Content="插座深度" MinWidth="0" IsChecked="{Binding SocketEnabled, Mode=TwoWay}" VerticalAlignment="Center"/>
+         <ComboBox Grid.Column="1" ItemsSource="{Binding SocketZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding SocketZone, Mode=TwoWay}" HorizontalAlignment="Stretch" AutomationProperties.Name="插座部位"/>
+         <CheckBox Grid.Row="1" Content="插头深度" MinWidth="0" IsChecked="{Binding PlugEnabled, Mode=TwoWay}" VerticalAlignment="Center"/>
+         <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding PlugZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding PlugZone, Mode=TwoWay}" HorizontalAlignment="Stretch" AutomationProperties.Name="插头部位"/>
+        </Grid>
+        <StackPanel x:Name="FallbackChoices" Grid.Column="1" Spacing="6" VerticalAlignment="Top">
+         <StackPanel Orientation="Horizontal" Spacing="4">
+          <CheckBox Content="PCS 回退" MinWidth="0" IsChecked="{Binding PcsEnabled, Mode=TwoWay}"/>
+          <Button Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="PCS 回退帮助" ToolTipService.ToolTip="当没有可计算深度的插座时使用PCS参数计算强度"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
+         </StackPanel>
+         <StackPanel Orientation="Horizontal" Spacing="4">
+          <CheckBox Content="LMS 回退" MinWidth="0" IsChecked="{Binding LmsEnabled, Mode=TwoWay}"/>
+          <Button Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="LMS 回退帮助" ToolTipService.ToolTip="当没有可计算深度的插头时或者未处于吸附状态时使用LMS参数计算强度"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
+         </StackPanel>
+        </StackPanel>
+        <StackPanel x:Name="ExtraChoice" Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top">
+         <CheckBox Content="参数 / 地图事件" MinWidth="0" IsChecked="{Binding ExtraEnabled, Mode=TwoWay}"/>
+         <Button Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="参数地图事件帮助" ToolTipService.ToolTip="使用自定义参数和cheese郊狼地图事件触发"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
+        </StackPanel>
+       </Grid>
+       <Grid ColumnSpacing="8">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="130"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/></Grid.ColumnDefinitions>
+        <TextBlock Text="波形" VerticalAlignment="Center"/>
+        <ComboBox Grid.Column="1" ItemsSource="{Binding WaveformChoices}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding Waveform, Mode=TwoWay}" HorizontalAlignment="Stretch" AutomationProperties.Name="波形"/>
+        <TextBlock Grid.Column="2" Text="上限" VerticalAlignment="Center"/>
+        <Slider Grid.Column="3" Minimum="0" Maximum="200" StepFrequency="1" TickPlacement="None" Height="32" MinHeight="0" VerticalAlignment="Center" Value="{Binding LimitValue, Mode=TwoWay}" AutomationProperties.Name="通道强度上限滑块"/>
+        <TextBox Grid.Column="4" MinWidth="0" Text="{Binding Limit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" InputScope="Number" AutomationProperties.Name="通道强度上限"/>
+       </Grid>
+       <Expander Header="自定义参数" IsExpanded="False" MinHeight="40" MinWidth="0" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8">
+        <Expander.Resources>
+         <Thickness x:Key="ExpanderHeaderPadding">12,6,12,6</Thickness>
+        </Expander.Resources>
+        <TextBox Text="{Binding ExtraPaths, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinWidth="0" Height="88" AutomationProperties.Name="额外参数"/>
+       </Expander>
+      </StackPanel>
+     </toolkit:SettingsCard>
+    </DataTemplate></ItemsControl.ItemTemplate>
+   </ItemsControl>
+  </StackPanel>
+ </ScrollViewer>
+</UserControl>

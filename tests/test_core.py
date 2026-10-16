@@ -29,6 +29,7 @@ from srv.sps_depth import (
 )
 from srv.waveform import (
     frame_amplitudes,
+    load_waveform_frames,
     normalize_socket_frame,
     scale_coyote_frame,
 )
@@ -88,6 +89,77 @@ class BaseHandlerTests(unittest.TestCase):
 
 
 class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lms_zero_and_timeout_never_clear_live_sps_depth(self):
+        for kind in ('coyote', 'opossum'):
+            for trigger, ogb in ((SPS_SOCKET, 'Orf'), (SPS_PLUG, 'Pen')):
+                settings = make_settings()
+                settings['dglab3'][kind]['channel_a']['lms_enabled'] = True
+                handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind=kind)
+                handler.start_background_jobs()
+                try:
+                    handler.osc_handler(f'/avatar/parameters/OGB/{ogb}/Test/PenSelf', (trigger, 'PenSelf'), 0.6)
+                    handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0.9)
+                    handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0)
+                    await asyncio.sleep(0.58)
+                    self.assertEqual(handler.current_strength_percentage, 0.6)
+                    self.assertEqual(handler.active_source, trigger)
+                finally:
+                    await handler.stop_background_jobs()
+
+    async def test_map_wave_is_constant_for_both_devices_and_restores_sps_preset(self):
+        for kind in ('coyote', 'opossum'):
+            connection = FakeDGConnection()
+            handler = ShockHandler(make_settings(), connection, 'A', device_kind=kind)
+            handler.wave_frames = ('1919191950505050', '1919191928282828')
+            handler.depth_update_time_window = 0.01
+            handler.start_background_jobs()
+            try:
+                handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf', (SPS_PLUG, 'PenSelf'), 0.25)
+                await handler.trigger_map_event(1)
+                await asyncio.sleep(0.06)
+                self.assertTrue(connection.waves)
+                self.assertTrue(all(wave[2][0] == '0A0A0A0A64646464' for wave in connection.waves))
+                self.assertEqual(handler.wave_frame_index, 0)
+                handler.map_event_until = time.monotonic() - 1
+                for _ in range(30):
+                    if handler.active_source == SPS_PLUG:
+                        break
+                    await asyncio.sleep(0.01)
+                start = len(connection.waves)
+                await asyncio.sleep(0.03)
+                self.assertEqual(handler.current_strength_percentage, 0.25)
+                self.assertTrue(connection.waves[start:])
+                self.assertTrue(all(wave[2][0].startswith('19191919') and frame_amplitudes(wave[2][0]) in ((20,) * 4, (10,) * 4) for wave in connection.waves[start:]))
+            finally:
+                await handler.stop_background_jobs()
+
+    async def test_catalog_lms_shutdown_preserves_other_live_depth_signals(self):
+        for kind in ('coyote', 'opossum'):
+            for trigger, ogb_kind, zone in ((SPS_SOCKET, 'Orf', 'TestSocket'), (SPS_PLUG, 'Pen', 'Test')):
+                with self.subTest(kind=kind, trigger=trigger):
+                    settings = make_settings()
+                    settings['dglab3'][kind]['channel_a']['lms_enabled'] = True
+                    handler = ShockHandler(settings, FakeDGConnection(), 'A', device_kind=kind)
+                    live = f'/avatar/parameters/OGB/{ogb_kind}/{zone}/PenSelf'
+                    removed = f'/avatar/parameters/OGB/{ogb_kind}/{zone}/PenOthers'
+                    try:
+                        handler.set_avatar_parameters((live, removed, LMS_PROXIMITY_ADDRESS))
+                        handler.osc_handler(live, (trigger, 'PenSelf'), 0.65)
+                        handler.osc_handler(removed, (trigger, 'PenOthers'), 0.2)
+                        handler.osc_handler(LMS_PROXIMITY_ADDRESS, (SOURCE_LMS, 'value'), 0)
+                        await asyncio.sleep(0)
+                        self.assertEqual(handler.current_strength_percentage, 0.65)
+                        handler.set_avatar_parameters((live,))
+                        await asyncio.sleep(0)
+                        self.assertEqual(handler.current_strength_percentage, 0.65)
+                        self.assertEqual(handler.active_source, trigger)
+                        self.assertNotIn('PenOthers', handler.calculators[(trigger, zone)].values)
+                        handler.set_avatar_parameters(())
+                        await asyncio.sleep(0)
+                        self.assertEqual(handler.current_strength_percentage, 0)
+                    finally:
+                        await handler.stop_background_jobs()
+
     async def test_availability_hints_follow_catalog_selected_zones_and_switches(self):
         handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
         try:
@@ -632,6 +704,31 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handler.is_active)
         self.assertEqual(handler.current_strength_percentage, 0.5)
 
+    async def test_pure_feeder_sends_current_ratio_without_modulation(self):
+        connection = FakeDGConnection()
+        settings = make_settings()
+        settings['dglab3']['coyote']['channel_a']['depth']['waveform'] = '纯粹'
+        handler = ShockHandler(settings, connection, 'A')
+        handler.depth_update_time_window = 0.01
+        task = asyncio.create_task(handler.depth_background_wave_feeder())
+        try:
+            await asyncio.sleep(0.03)
+            self.assertFalse(connection.waves)  # No trigger never arms output.
+            for ratio, expected in ((0.25, 25), (0.8, 80), (1, 100), (0, 0)):
+                start = len(connection.waves)
+                await handler.handler_depth(ratio)
+                for _ in range(30):
+                    if len(connection.waves) > start:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertGreater(len(connection.waves), start)
+                self.assertEqual(frame_amplitudes(connection.waves[-1][2][0]), (expected,) * 4)
+            await handler._clear_output()
+            self.assertEqual(handler.last_sent_strengths, (0, 0, 0, 0))
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def test_debug_state_tracks_exact_waveform_strengths_sent_to_app(self):
         connection = FakeDGConnection()
         handler = ShockHandler(make_settings(), connection, 'A')
@@ -787,6 +884,29 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SPSDepthTests(unittest.TestCase):
+    def test_avatar_lists_only_complete_numeric_depth_zones(self):
+        cases = (
+            ('Orf', 'TouchOnly', 'TouchSelf', 'Float'),
+            ('Orf', 'RootOnly', 'PenSelfNewRoot', 'Float'),
+            ('Orf', 'MixedOwners', 'PenSelfNewRoot', 'Float'),
+            ('Orf', 'MixedOwners', 'PenOthersNewTip', 'Float'),
+            ('Orf', 'Complete', 'PenSelfNewRoot', 'Float'),
+            ('Orf', 'Complete', 'PenSelfNewTip', 'Float'),
+            ('Orf', 'Direct', 'PenOthers', 'Float'),
+            ('Pen', 'FrotOnly', 'FrotOthers', 'Float'),
+            ('Pen', 'StringDepth', 'PenSelf', 'String'),
+            ('Pen', 'Readable', 'PenSelf', 'Float'),
+        )
+        parameters = [{'name': f'OGB/{kind}/{zone}/{signal}', 'output': {
+            'address': f'/avatar/parameters/OGB/{kind}/{zone}/{signal}', 'type': type_,
+        }} for kind, zone, signal, type_ in cases]
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'avtr_test.json'
+            path.write_text(json.dumps({'parameters': parameters}), encoding='utf-8')
+            avatar = load_avatar_sps_config(path)
+        self.assertEqual([zone.zone_id for zone in avatar.sockets], ['Complete', 'Direct'])
+        self.assertEqual([zone.zone_id for zone in avatar.plugs], ['Readable'])
+
     def test_valid_socket_depth_requires_a_direct_depth_or_matching_pair(self):
         base = '/avatar/parameters/OGB/Orf/'
         for signals, valid in (
@@ -844,6 +964,10 @@ class SPSDepthTests(unittest.TestCase):
             'name': 'Test Avatar',
             'parameters': [
                 {
+                    'name': 'OGB/Orf/Test Socket/PenOthersNewTip',
+                    'output': {'address': '/avatar/parameters/OGB/Orf/Test_Socket/PenOthersNewTip', 'type': 'Float'},
+                },
+                {
                     'name': 'OGB/Orf/Test Socket/PenOthersNewRoot',
                     'output': {
                         'address': '/avatar/parameters/OGB/Orf/Test_Socket/PenOthersNewRoot',
@@ -898,6 +1022,15 @@ class SPSDepthTests(unittest.TestCase):
 
 
 class WaveformProtocolTests(unittest.TestCase):
+    def test_pure_coyote_waveform_has_no_time_envelope(self):
+        self.assertEqual(srv.WAVEFORM_NAMES_BY_DEVICE['coyote'][0], '纯粹')
+        frames = load_waveform_frames('纯粹', 'coyote')
+        self.assertEqual(frames, ('0A0A0A0A64646464',))
+        for depth, expected in ((0, 0), (0.25, 25), (0.7, 70), (1, 100)):
+            self.assertEqual(frame_amplitudes(scale_coyote_frame(frames[0], depth)), (expected,) * 4)
+        self.assertNotIn('纯粹', srv.WAVEFORM_NAMES_BY_DEVICE['opossum'])
+        self.assertIn('纯粹', srv.WAVEFORMS)
+
     def test_official_device_waveform_libraries_are_separate(self):
         self.assertEqual(len(srv.COYOTE_WAVEFORMS), 24)
         self.assertEqual(len(srv.OPOSSUM_WAVEFORMS), 20)

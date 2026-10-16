@@ -11,7 +11,7 @@ _FRAME_RE = re.compile(r'^[0-9A-Fa-f]{16}$')
 
 
 def load_waveform_frames(name, device_kind='coyote'):
-    """Return validated frames from the selected device's official library."""
+    """Return validated frames from the device's presets (including Pure)."""
     try:
         frames = WAVEFORMS_BY_DEVICE[device_kind][name]
     except (KeyError, TypeError) as exc:

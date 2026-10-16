@@ -39,7 +39,11 @@ from srv.device_router import DeviceRouter
 from srv.handler.machine_handler import TuYaConnection, TuyaHandler
 from srv.handler.shock_handler import ShockHandler
 from srv.oscquery import OSCQueryAvatarSnapshot, OSCQueryService
-from srv.sps_depth import SPS_PLUG, SPS_SOCKET, SPSZone, find_avatar_sps_config
+from srv.sps_depth import (
+    SPS_PLUG, SPS_SOCKET, SPSZone, find_avatar_sps_config,
+    has_socket_depth_parameters, has_plug_depth_parameters,
+    PCS_PROXIMITY_ADDRESS, LMS_PROXIMITY_ADDRESS,
+)
 
 
 BUNDLE_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
@@ -555,16 +559,23 @@ class DeviceRuntime:
 
     @staticmethod
     def _query_zones(parameter_paths):
+        parameter_paths = tuple(parameter_paths)
         zones = {SPS_SOCKET: set(), SPS_PLUG: set()}
         for path in parameter_paths:
             parts = str(path).strip('/').split('/')
-            if len(parts) < 6 or parts[:3] != ['avatar', 'parameters', 'OGB']:
+            if len(parts) != 6 or parts[:3] != ['avatar', 'parameters', 'OGB']:
                 continue
             if parts[3] == 'Orf':
                 zones[SPS_SOCKET].add(parts[4])
             elif parts[3] == 'Pen':
                 zones[SPS_PLUG].add(parts[4])
-        return zones
+        return {
+            kind: {zone for zone in candidates if check(parameter_paths, zone)}
+            for kind, candidates, check in (
+                (SPS_SOCKET, zones[SPS_SOCKET], has_socket_depth_parameters),
+                (SPS_PLUG, zones[SPS_PLUG], has_plug_depth_parameters),
+            )
+        }
 
     def _apply_avatar_snapshot(self, snapshot):
         if snapshot.observed_at and snapshot.observed_at < self.last_avatar_change_time:
@@ -638,6 +649,12 @@ class DeviceRuntime:
             'avatar_name': avatar.avatar_name if avatar else (avatar_id or '当前 Avatar'),
             'found': bool(snapshot.endpoint or avatar is not None),
             'source': source,
+            'parameter_availability': {
+                'known': parameter_paths is not None,
+                'socket': bool(sockets), 'plug': bool(plugs),
+                'pcs': PCS_PROXIMITY_ADDRESS in (parameter_paths or ()),
+                'lms': LMS_PROXIMITY_ADDRESS in (parameter_paths or ()),
+            },
             'sockets': [
                 {'zone_id': item.zone_id, 'label': item.label}
                 for item in sockets
@@ -1010,16 +1027,20 @@ def legacy_main():
 
 
 def main():
-    """Launch the WPF UI; retain the old UI only as an explicit fallback."""
+    """Launch WinUI 3; older frontends require an explicit opt-in."""
     if '--legacy-ui' in sys.argv:
         return legacy_main()
     import os
     import subprocess
     executable = APP_DIR / 'Neko-VRC.exe'
-    if not executable.exists():
+    if '--wpf-ui' in sys.argv:
         executable = APP_DIR / 'desktop' / 'NekoVRC.Desktop' / 'bin' / 'Debug' / 'net10.0-windows' / 'Neko-VRC.exe'
     if not executable.exists():
-        raise RuntimeError('请先构建 WPF 前端，或使用完整的 Neko-VRC 发布包。')
+        if '--wpf-ui' not in sys.argv:
+            executable = APP_DIR / 'desktop' / 'NekoVRC.WinUI' / 'bin' / 'x64' / 'Debug' / 'net10.0-windows10.0.19041.0' / 'win-x64' / 'Neko-VRC.exe'
+    if not executable.exists():
+        frontend = 'WPF' if '--wpf-ui' in sys.argv else 'WinUI 3'
+        raise RuntimeError(f'请先构建 {frontend} 前端，或使用完整的 Neko-VRC 发布包。')
     environment = os.environ.copy()
     local_sdk = APP_DIR / '.tools' / 'dotnet'
     if local_sdk.exists():

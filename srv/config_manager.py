@@ -69,8 +69,8 @@ DEFAULT_BASIC_SETTINGS = {
 DEFAULT_SETTINGS = {
     'SERVER_IP': None,
     'connections': {
-        'coyote': {'mode': 'app', 'address': '', 'model': 'coyote3'},
-        'opossum': {'mode': 'app', 'address': '', 'model': 'opossum'},
+        'coyote': {'mode': 'bluetooth', 'address': '', 'model': 'coyote3'},
+        'opossum': {'mode': 'bluetooth', 'address': '', 'model': 'opossum'},
     },
     'dglab3': {
         device_kind: {
@@ -113,6 +113,7 @@ DEFAULT_SETTINGS = {
     'log_level': 'INFO',
     'version': CONFIG_FILE_VERSION,
     'general': {
+        'theme': 'system',
         'run_in_background': True,
         'steamvr_auto_start': False,
         'local_ip_detect': {'host': '223.5.5.5', 'port': 80},
@@ -306,6 +307,9 @@ def validate_config(settings, basic_settings):
             raise ValueError('分流目标不能与分流入口相同，否则会形成 UDP 循环。')
         if vrcft == internal:
             raise ValueError('VRCFT 目标与本程序内部目标不能相同。')
+
+    if settings.get('general', {}).get('theme', 'system') not in ('system', 'light', 'dark'):
+        raise ValueError('general.theme 必须为 system、light 或 dark。')
 
     chatbox = settings['chatbox']
     _validate_host(chatbox, 'osc_host')

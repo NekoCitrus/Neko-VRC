@@ -229,6 +229,7 @@ class BLETests(unittest.IsolatedAsyncioTestCase):
 class RouterTests(unittest.IsolatedAsyncioTestCase):
     async def test_mixed_routes_and_hot_switch_do_not_duplicate(self):
         config = settings()
+        config['connections']['coyote']['mode'] = 'app'
         config['connections']['opossum']['mode'] = 'bluetooth'
         router = DeviceRouter(config)
         host = Mock(connected=True, address='opossum')
@@ -247,7 +248,10 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('opossum', router.hosts)
 
     async def test_stop_latches_and_never_accepts_future_samples(self):
-        router = DeviceRouter(settings())
+        config = settings()
+        for connection in config['connections'].values():
+            connection['mode'] = 'app'
+        router = DeviceRouter(config)
         app = Mock(spec=['send_wave', 'clear_wave', 'uuid'], send_wave=AsyncMock(), clear_wave=AsyncMock())
         with patch('srv.get_ws_connections', return_value=(app,)):
             await router.emergency_stop()
@@ -258,6 +262,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_one_transport_in_device_snapshot(self):
         config = settings()
+        config['connections']['coyote']['mode'] = 'app'
         config['connections']['opossum']['mode'] = 'bluetooth'
         router = DeviceRouter(config)
         host = Mock(connected=True)

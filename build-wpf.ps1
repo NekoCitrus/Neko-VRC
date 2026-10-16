@@ -9,7 +9,9 @@ $project = Join-Path $PSScriptRoot 'desktop\NekoVRC.Desktop\NekoVRC.Desktop.cspr
 [xml]$projectXml = Get-Content -LiteralPath $project -Raw
 $releaseVersion = [string]$projectXml.Project.PropertyGroup.Version
 if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version' }
-$releaseDir = Join-Path $PSScriptRoot "dist\Neko-VRC-v$releaseVersion"
+$productRoot = Join-Path $PSScriptRoot "products\v$releaseVersion"
+$releaseDir = Join-Path $productRoot 'Neko-VRC-WPF-win-x64'
+$backendBuild = Join-Path $PSScriptRoot 'build\wpf-backend'
 $publishObj = Join-Path (Split-Path -Parent $project) 'obj\ReleasePackaging\'
 Push-Location $PSScriptRoot
 try {
@@ -17,11 +19,11 @@ try {
     # Keep release restore and XAML intermediates separate from the IDE build.
     & $Dotnet publish $project -c Release -r win-x64 --self-contained true -o $releaseDir --nologo "-p:MSBuildProjectExtensionsPath=$publishObj" '-p:IntermediateOutputPath=obj/ReleasePackaging/Release/'
     if ($LASTEXITCODE -ne 0) { throw 'WPF publish failed' }
-    & $Python -m PyInstaller --clean --noconfirm neko_vrc.spec
+    & $Python -m PyInstaller --clean --noconfirm --distpath (Join-Path $backendBuild 'dist') --workpath (Join-Path $backendBuild 'work') neko_vrc.spec
     if ($LASTEXITCODE -ne 0) { throw 'Backend build failed' }
     $backendDir = Join-Path $releaseDir 'backend'
     New-Item -ItemType Directory -Force -Path $backendDir | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dist\Neko-VRC.Backend.exe') -Destination $backendDir
+    Copy-Item -LiteralPath (Join-Path $backendBuild 'dist\Neko-VRC.Backend.exe') -Destination $backendDir
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $releaseDir
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README_en.md') -Destination $releaseDir
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'doc') -Destination $releaseDir -Recurse -Force
@@ -30,7 +32,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LICENSE') -Destination $releaseDir
     }
     Write-Host "Ready: $releaseDir\Neko-VRC.exe"
-    $archive = Join-Path $PSScriptRoot "dist\Neko-VRC-v$releaseVersion-win-x64.zip"
+    $archive = Join-Path $productRoot "Neko-VRC-WPF-v$releaseVersion-win-x64.zip"
     Compress-Archive -LiteralPath $releaseDir -DestinationPath $archive -Force
     Write-Host "Archive: $archive"
 } finally { Pop-Location }

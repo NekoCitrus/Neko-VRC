@@ -191,6 +191,8 @@ public sealed class MainViewModel : Observable
     public ObservableCollection<DeviceViewModel> Devices { get; } = new();
     public DeviceViewModel? CurrentDevice => Devices.FirstOrDefault(d => d.Kind == _page);
     public bool IsGeneral => _page == "general";
+    public bool IsCoyote => _page == "coyote";
+    public bool IsOpossum => _page == "opossum";
     public bool IsDevice => _page is "coyote" or "opossum";
     public bool IsDebug => _page == "debug";
     public bool IsAbout => _page == "about";
@@ -217,7 +219,7 @@ public sealed class MainViewModel : Observable
     public void SelectPage(string page)
     {
         _page = page;
-        foreach (string property in new[] { nameof(IsGeneral), nameof(IsDevice), nameof(IsDebug), nameof(IsAbout), nameof(CurrentDevice) }) Changed(property);
+        foreach (string property in new[] { nameof(IsGeneral), nameof(IsCoyote), nameof(IsOpossum), nameof(IsDevice), nameof(IsDebug), nameof(IsAbout), nameof(CurrentDevice) }) Changed(property);
     }
 
     public async Task InitializeAsync()

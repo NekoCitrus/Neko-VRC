@@ -85,6 +85,16 @@ class BackendAPI:
             return {'client': BleakClientWinRT.__name__, 'scanner': BleakScannerWinRT.__name__}
         if method == 'save':
             return self.save(data['settings'], data['basic'])
+        if method == 'set_theme':
+            theme = data.get('theme')
+            if theme not in ('system', 'light', 'dark'):
+                raise ValueError('无效的主题。')
+            settings = copy.deepcopy(self.settings)
+            settings['general']['theme'] = theme
+            # UI preference only: do not hot-reload/clear active device output.
+            self.manager.save(settings, self.basic)
+            self.settings = settings
+            return {'theme': theme}
         if method == 'start':
             if self.settings['general']['steamvr_auto_start']:
                 try:

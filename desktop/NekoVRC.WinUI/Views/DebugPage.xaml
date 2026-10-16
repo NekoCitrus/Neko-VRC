@@ -1,0 +1,5 @@
+<Page x:Class="NekoVRC.WinUI.Views.DebugPage"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <TextBox Text="{Binding Logs, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+          Padding="12" Margin="0,0,0,8" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" AutomationProperties.Name="运行日志"/>
+</Page>

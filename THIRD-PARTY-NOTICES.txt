@@ -1,0 +1,51 @@
+Neko-VRC WinUI 3 frontend: third-party notices
+===========================================
+
+Neko-VRC remains licensed under AGPL-3.0 (see LICENSE).
+Third-party libraries and UI references retain their own licenses.
+The new pages compose native controls; no WSL backend code is included.
+
+UI composition references (MIT):
+  WSL Settings ShellPage / MemAndProcPage / MainWindow
+  https://github.com/microsoft/WSL/tree/master/src/windows/wslsettings
+  Copyright (c) Microsoft Corporation.
+
+  WinUI Gallery MainWindow / SettingsPage / TitleBar usage
+  https://github.com/microsoft/WinUI-Gallery
+  Copyright (c) Microsoft Corporation. All rights reserved.
+
+WinUI 3 controls (MIT):
+  https://github.com/microsoft/microsoft-ui-xaml
+  Copyright (c) Microsoft Corporation. All rights reserved.
+
+Windows Community Toolkit SettingsCard / SettingsExpander (MIT):
+  https://github.com/CommunityToolkit/Windows
+  Copyright (c) .NET Foundation and Contributors. All rights reserved.
+
+MIT License (applies to the components and references above)
+-----------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Toolkit's upstream disclaimer additionally names NON-INFRINGEMENT.
+Full upstream license: https://github.com/CommunityToolkit/Windows/blob/main/License.md
+
+Microsoft Windows App SDK and .NET runtime distributions include their own
+licenses/notices in the published directory. Their terms are not replaced by
+Neko-VRC's license. Existing backend dependency notices and project credits
+remain applicable.

@@ -33,7 +33,7 @@ def get_ws_connections():
 WAVEFORM_NAMES = WAVEFORM_NAMES_BY_DEVICE['coyote']
 WAVEFORMS = {
     name: json.dumps(frames, separators=(',', ':'))
-    for name, frames in COYOTE_WAVEFORMS.items()
+    for name, frames in WAVEFORMS_BY_DEVICE['coyote'].items()
 }
 waveData = [WAVEFORMS[name] for name in WAVEFORM_NAMES]
 DEFAULT_WAVE = waveData[0]

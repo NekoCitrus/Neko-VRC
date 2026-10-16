@@ -9,9 +9,9 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 
-# Keep the packaged backend's Windows version in sync with the WPF frontend.
+# Keep the packaged backend's Windows version in sync with the default frontend.
 version = ElementTree.parse(
-    Path(SPECPATH) / 'desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj',
+    Path(SPECPATH) / 'desktop/NekoVRC.WinUI/NekoVRC.WinUI.csproj',
 ).findtext('./PropertyGroup/Version')
 version_parts = tuple(int(part) for part in version.split('.'))
 file_version = (version_parts + (0, 0, 0, 0))[:4]

@@ -88,6 +88,35 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(loaded['connections']['opossum']['address'], '11:22')
         self.assertFalse(loaded_basic['dglab3']['opossum']['channel_b']['plug_enabled'])
 
+    def test_theme_defaults_and_roundtrips_without_changing_waveform(self):
+        self.assertEqual(self.api.settings['general']['theme'], 'system')
+        self.assertEqual(self.api.settings['dglab3']['coyote']['channel_a']['depth']['waveform'], '纯粹')
+        for theme in ('light', 'dark', 'system'):
+            settings = copy.deepcopy(self.api.settings)
+            settings['general']['theme'] = theme
+            settings['dglab3']['coyote']['channel_a']['depth']['waveform'] = '挤压'
+            self.api.save(settings, self.api.basic)
+            loaded, _ = self.api.manager.load()
+            self.assertEqual(loaded['general']['theme'], theme)
+            self.assertEqual(loaded['dglab3']['coyote']['channel_a']['depth']['waveform'], '挤压')
+
+    def test_invalid_theme_is_rejected(self):
+        settings = copy.deepcopy(self.api.settings)
+        settings['general']['theme'] = 'invalid'
+        with self.assertRaises(ValueError):
+            self.api.save(settings, self.api.basic)
+
+    def test_immediate_theme_save_does_not_apply_device_settings(self):
+        with patch.object(self.api.controller, 'apply_settings') as apply:
+            self.assertEqual(self.api.dispatch('set_theme', {'theme': 'dark'}), {'theme': 'dark'})
+            apply.assert_not_called()
+        loaded, loaded_basic = self.api.manager.load()
+        self.assertEqual(loaded['general']['theme'], 'dark')
+        self.assertEqual(self.api.settings['general']['theme'], 'dark')
+        self.assertEqual(loaded_basic, self.api.basic)
+        with self.assertRaises(ValueError):
+            self.api.dispatch('set_theme', {'theme': 'invalid'})
+
     def test_disk_failure_rolls_live_config_back(self):
         previous = copy.deepcopy(self.api.settings)
         changed = copy.deepcopy(previous)

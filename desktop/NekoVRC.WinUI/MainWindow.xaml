@@ -1,0 +1,58 @@
+<Window x:Class="NekoVRC.WinUI.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <!-- Composition follows WSL ShellPage and WinUI Gallery; controls remain stock WinUI. -->
+ <Window.SystemBackdrop><MicaBackdrop/></Window.SystemBackdrop>
+ <Grid x:Name="Root" Loaded="RootLoaded" ActualThemeChanged="ThemeChanged">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <TitleBar x:Name="AppTitleBar" Title="Neko-VRC" IsBackButtonVisible="False" IsPaneToggleButtonVisible="True" PaneToggleRequested="PaneToggleRequested">
+   <TitleBar.IconSource><ImageIconSource ImageSource="ms-appx:///Assets/neko-vrc.ico"/></TitleBar.IconSource>
+  </TitleBar>
+  <NavigationView x:Name="Navigation" Grid.Row="1" IsSettingsVisible="False" IsBackButtonVisible="Collapsed" IsPaneToggleButtonVisible="False"
+                  OpenPaneLength="200" ExpandedModeThresholdWidth="900" AlwaysShowHeader="False" SelectionChanged="NavigationChanged">
+   <NavigationView.Resources>
+    <ResourceDictionary><ResourceDictionary.ThemeDictionaries>
+     <ResourceDictionary x:Key="Light">
+      <SolidColorBrush x:Key="NavigationViewContentBackground" Color="{StaticResource NavigationViewExpandedPaneBackground}"/>
+      <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="{StaticResource NavigationViewExpandedPaneBackground}"/>
+     </ResourceDictionary>
+     <ResourceDictionary x:Key="Dark">
+      <SolidColorBrush x:Key="NavigationViewContentBackground" Color="{StaticResource NavigationViewExpandedPaneBackground}"/>
+      <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="{StaticResource NavigationViewExpandedPaneBackground}"/>
+     </ResourceDictionary>
+     <ResourceDictionary x:Key="HighContrast">
+      <SolidColorBrush x:Key="NavigationViewContentBackground" Color="{ThemeResource SystemColorWindowColor}"/>
+      <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="{ThemeResource SystemColorWindowColor}"/>
+     </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries></ResourceDictionary>
+   </NavigationView.Resources>
+   <NavigationView.MenuItems>
+    <NavigationViewItem Content="基本设置" Tag="general" Icon="Setting"/>
+    <NavigationViewItem Content="郊狼设置" Tag="coyote"><NavigationViewItem.Icon><FontIcon Glyph="&#xE772;"/></NavigationViewItem.Icon></NavigationViewItem>
+    <NavigationViewItem Content="负鼠设置" Tag="opossum"><NavigationViewItem.Icon><FontIcon Glyph="&#xE95E;"/></NavigationViewItem.Icon></NavigationViewItem>
+    <NavigationViewItem Content="运行调试" Tag="debug"><NavigationViewItem.Icon><FontIcon Glyph="&#xE9D9;"/></NavigationViewItem.Icon></NavigationViewItem>
+   </NavigationView.MenuItems>
+   <NavigationView.FooterMenuItems><NavigationViewItem x:Name="AboutNavigationItem" Content="关于与版权" Tag="about" Icon="Help"/></NavigationView.FooterMenuItems>
+   <Grid x:Name="LayoutArea" Margin="16,8,16,0" RowSpacing="8">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <StackPanel x:Name="HeaderPanel" Spacing="6">
+     <Grid x:Name="HeaderBar" Height="36" ColumnSpacing="16">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="PageTitle" Text="基本设置" Style="{StaticResource TitleTextBlockStyle}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+      <Grid x:Name="HeaderActions" Grid.Column="1" ColumnSpacing="12" VerticalAlignment="Center">
+       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <TextBlock x:Name="ServiceStatus" Text="{Binding StatusLine}" HorizontalAlignment="Right" VerticalAlignment="Center" TextAlignment="Right" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding StatusLine}"/>
+       <StackPanel x:Name="GlobalActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <Button Content="保存并应用" Command="{Binding SaveCommand}" Style="{StaticResource AccentButtonStyle}"/>
+        <Button x:Name="PauseButton" Content="暂停" Command="{Binding StopCommand}"/>
+        <Button Content="恢复" Command="{Binding ResumeCommand}"/>
+       </StackPanel>
+      </Grid>
+     </Grid>
+     <InfoBar x:Name="ErrorBar" IsOpen="False" Severity="Error" Title="操作未完成"/>
+    </StackPanel>
+    <Frame x:Name="ContentFrame" Grid.Row="1" SizeChanged="ContentFrameSizeChanged"/>
+   </Grid>
+  </NavigationView>
+ </Grid>
+</Window>

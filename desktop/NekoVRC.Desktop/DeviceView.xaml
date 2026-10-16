@@ -8,7 +8,7 @@
    <TextBlock Text="{Binding Name}" FontSize="26"/>
    <TextBlock Grid.Column="1" Text="{Binding Status}" HorizontalAlignment="Right" Margin="12,0,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}"/>
   </Grid>
-  <Border Grid.Row="1" Background="{StaticResource Panel}" CornerRadius="8" Padding="12" Margin="0,0,0,8">
+  <Border Grid.Row="1" Style="{StaticResource SettingsCard}" Padding="16,12">
    <StackPanel>
     <Grid>
      <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -27,18 +27,19 @@
     </Grid>
    </StackPanel>
   </Border>
-  <ItemsControl Grid.Row="2" ItemsSource="{Binding Channels}">
-   <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+  <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Tag="OptionalChannelScroll">
+  <ItemsControl ItemsSource="{Binding Channels}">
+   <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
    <ItemsControl.ItemTemplate><DataTemplate>
-    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="12,10" Margin="0,0,0,8">
+    <Border Style="{StaticResource SettingsCard}" Padding="16,10">
      <StackPanel>
       <Grid Margin="0,0,0,6">
        <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-       <TextBlock Text="{Binding Name}" FontSize="20"/>
-       <TextBlock Grid.Column="1" Text="{Binding ParameterHint}" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding ParameterHint}"/>
+       <TextBlock Text="{Binding Name}" FontSize="18" FontWeight="SemiBold"/>
+       <TextBlock Grid.Column="1" Text="{Binding ParameterHint}" Style="{StaticResource SecondaryText}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding ParameterHint}"/>
       </Grid>
       <Grid>
-       <Grid.ColumnDefinitions><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="76"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+       <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="68"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
        <CheckBox Content="Socket" IsChecked="{Binding SocketEnabled}" Margin="0"/>
        <ComboBox Grid.Column="1" ItemsSource="{Binding SocketZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding SocketZone}"/>
        <CheckBox Grid.Column="3" Content="Plug" IsChecked="{Binding PlugEnabled}" Margin="0"/>
@@ -56,10 +57,13 @@
        <TextBlock Grid.Column="3" Text="上限"/>
        <TextBox Grid.Column="4" Text="{Binding Limit, UpdateSourceTrigger=PropertyChanged}"/>
       </Grid>
-      <TextBox Text="{Binding ExtraPaths, UpdateSourceTrigger=PropertyChanged}" ToolTip="额外参数，每行一个；支持 * 通配符。" AcceptsReturn="True" Height="56" Padding="6,3" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+      <Expander Header="自定义参数" IsExpanded="False" Margin="0,4,0,0">
+       <TextBox Text="{Binding ExtraPaths, UpdateSourceTrigger=PropertyChanged}" ToolTip="额外参数，每行一个；支持 * 通配符。" AcceptsReturn="True" Height="56" Margin="0,8,0,0" Padding="6,3" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+      </Expander>
      </StackPanel>
     </Border>
    </DataTemplate></ItemsControl.ItemTemplate>
   </ItemsControl>
+  </ScrollViewer>
  </Grid>
 </UserControl>

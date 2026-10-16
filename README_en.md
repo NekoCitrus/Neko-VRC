@@ -6,7 +6,7 @@
 
 > This document is translated by AI.
 
-Current release: **v2.0.0**, including the WPF UI, direct Bluetooth connections, four independent channel triggers, OSCQuery reading and fallback hints, and compact multi-device chatbox output.
+Current version: **v2.0.0**. WinUI 3 is now the default source frontend, retaining direct Bluetooth connections, four independent channel triggers, OSCQuery reading and fallback hints, and compact multi-device chatbox output. The screenshots above show the older frontend.
 
 A small tool that reads SPS/OGB penetration depth from VRChat OSC and controls either a Coyote DG-LAB 3.0 or an Opossum vibration controller.
 
@@ -18,23 +18,27 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 ## Usage
 
 1. Go to [Project Releases](https://github.com/NekoCitrus/Neko-VRC/releases) to download the latest Neko-VRC build.
-2. Extract the complete package and run `Neko-VRC.exe`. The WPF UI uses a black background and `#FAE687` text; Python and .NET runtimes are bundled.
-3. Under **Coyote A/B** and **Opossum A/B**, configure Socket, Plug, extra parameters, waveform, and strength limit for each channel.
+2. Extract the complete package and run `Neko-VRC.exe`. WinUI 3 follows the Windows light/dark theme and starts the backend automatically. Python, .NET and Windows App Runtime are bundled. Windows 11 supplies native rounded corners; Windows 10 uses the appearance supported by the OS.
+3. Under **Coyote settings** and **Opossum settings**, configure Socket, Plug, extra parameters, waveform, and strength limit for each channel.
 4. Select **Save and apply**. The existing APP connection stays connected.
-5. Select **App** or **Bluetooth direct** separately for each device kind. App mode uses the existing Socket QR connection. For direct mode, release the phone's Bluetooth connection, scan, select a host, and connect.
+5. Select **App** or **Bluetooth direct** separately for each device kind. New profiles default to Bluetooth direct; saved choices are preserved. App mode uses the existing Socket QR connection. For direct mode, release the phone's Bluetooth connection, scan, select a host, and connect.
 6. If background operation is enabled, closing the window hides it to the real Windows notification area. Use the tray menu to reopen or exit.
 
 ## Desktop UI
 
-- **General:** Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
-- **Coyote A/B:** independent sources, official Coyote waveform, and strength limit for each channel.
-- **Opossum A/B:** independent sources, official Opossum waveform, and strength limit for each channel.
-- **Runtime Debug:** source, trigger ratio, sent waveform amplitudes, effective cap, device feedback, and Bluetooth battery status.
+- **General:** Light / Dark / System appearance (applied and saved immediately without Save), Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
+- **Coyote settings:** independent A/B sources, waveform, and strength limit for each channel. The first choice, Pure (纯粹), is the new-profile default: a constant envelope follows the calculated ratio without preset modulation, retaining the required device pulse format and existing caps. Saved waveform choices are preserved.
+- **Opossum settings:** independent A/B sources, official Opossum waveform, and strength limit for each channel.
+- **Runtime Debug:** only printed logs in a resizable full-page text box. Connection and battery status remain on device settings pages.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
 Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
 
-Each device kind has exactly one selected output route. App/Bluetooth mixed operation is supported; direct mode connects one host per kind. Saving channel settings preserves connections; changing route or address clears the old output and requires a new manual Bluetooth connection. Emergency stop is latched until Resume. A lost radio link cannot guarantee delivery of a zero command; use the host's physical stop controls.
+Each channel groups triggers into three columns: depth/zone selectors, PCS/LMS fallbacks, and parameter/map events. Its integer strength cap uses a synchronized 0–200 slider without ticks or endpoint labels and a text input alongside a compact waveform selector. Device settings still require Save/Apply. Appearance changes save independently without restarting the service or applying other pending edits.
+
+Each device kind has exactly one selected output route. App/Bluetooth mixed operation is supported; direct mode connects one host per kind. Saving channel settings preserves connections; changing route or address clears the old output and requires a new manual Bluetooth connection. Pause stops output and is latched until Resume. A lost radio link cannot guarantee delivery of a zero command; use the host's physical stop controls.
+
+The window defaults to 940 × 648, with a DPI-scaled minimum size of 880 × 640. Save/Apply, Pause and Resume stay at the heading's right edge, with service status, parameter hint and Avatar name immediately to their left on the same row. Long names are trimmed with a full-text tooltip. The redundant window Exit button is removed. QR remains in General and the device connection cards; Scan/Connect/Disconnect stay in the device connection cards. The heading is 36 pixels high. Default collapsed device settings fit without scrolling and their bottom aligns with About/Copyright in the sidebar. Native page transitions and navigation indicator animations are retained. Each device page keeps its own device binding so its connection card and channels animate away together. Closing for exit hides the window immediately while device/network cleanup completes. When tray operation is enabled, closing still hides to the tray; its menu retains Exit.
 
 ### Start with SteamVR
 
@@ -56,7 +60,17 @@ Direct BLE has separate encoders for Coyote 2.0, Coyote 3.0, and Opossum V1. Coy
 
 Official protocols: [Coyote V2](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v2/README.md), [Coyote V3](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/coyote/v3/README.md), [Opossum](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/blob/main/opossum-vibrate-controller/README.md).
 
-Build with .NET 10 SDK and `requirements-build.txt`, then run `powershell -ExecutionPolicy Bypass -File build-wpf.ps1`. Distribute the whole `dist/Neko-VRC-v2.0.0/` directory. For source runs, build `desktop/NekoVRC.Desktop/NekoVRC.Desktop.csproj` before launching `neko_vrc.py`. `--legacy-ui` explicitly selects the old Win32 UI.
+Build on Windows with .NET 10 SDK, Windows SDK 10.0.26100.0 and Python dependencies from `requirements-build.txt`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build-winui.ps1
+```
+
+Distribute the complete portable x64 directory `products/v2.0.0/Neko-VRC-WinUI-win-x64/`, or its `products/v2.0.0/Neko-VRC-WinUI-v2.0.0-win-x64.zip` archive. Final products are versioned under `products/`; backend intermediates remain under `build/`. Existing `dist/` files are preserved, but standard builds no longer write there. Copying only the frontend EXE is not supported.
+
+For source runs, build `desktop/NekoVRC.WinUI/NekoVRC.WinUI.csproj` with `-p:Platform=x64`, then launch `neko_vrc.py`. Native NavigationView, TitleBar and Toolkit settings cards follow the composition of [WSL Settings](https://github.com/microsoft/WSL/tree/master/src/windows/wslsettings) and [WinUI Gallery](https://github.com/microsoft/WinUI-Gallery). Navigation and content share a background, caption buttons are OS-rendered, and custom parameters are collapsed by default. See [third-party notices](THIRD-PARTY-NOTICES.txt).
+
+The WPF project and `build-wpf.ps1` remain available. `--wpf-ui` explicitly selects the built WPF source frontend; `--legacy-ui` selects the old Win32 frontend. WinUI packages do not overwrite the existing WPF release directory.
 
 In App mode, Coyote and Opossum share a DG-LAB 4 APP Socket V4 connection with independent host `slotId` values. Operations are routed according to each device kind's selected connection. Opossum waveforms are normalized to the OVC fixed prefix and four vibration-amplitude bytes. See the official [dglab-kit](https://github.com/dungeonlab-open/dglab-kit).
 
@@ -76,7 +90,11 @@ The maximum current value wins and linearly scales that device channel's wavefor
 
 Socket and Plug can each target one named zone or **any currently active** zone. The application discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar and SPS parameter tree; `/avatar/change` only requests an immediate refresh.
 
-Availability checks use readable numeric parameters. PCS is suppressed only after valid Socket depth values have actually been read (zero is valid), not by declarations alone. Fresh OSCQuery values supplement live OSC, expire after 0.5 seconds, and cannot restore output during emergency stop. Each channel suggests available PCS/LMS fallbacks; if none of the four sources exist, it reports no usable Socket/Plug/PCS/LMS parameters. Hints never change the checkboxes automatically.
+Availability checks use readable numeric parameters. Zone lists/counts include only complete same-zone, same-owner Root/Tip pairs or direct depth signals, excluding Touch/Frot, incomplete pairs and unreadable nodes. PCS is suppressed only after valid Socket depth values have actually been read (zero is valid), not by declarations alone. Fresh OSCQuery values supplement live OSC, expire after 0.5 seconds, and cannot restore output while paused.
+
+Waiting and availability hints appear once after the top service status, not under every channel. Missing depth suggests the available corresponding PCS/LMS fallback; if neither depth nor fallback exists, it reports no usable Socket/Plug parameters. Hints never change checkboxes automatically. Hover the question marks after PCS, LMS and parameter/map events for help.
+
+Turning LMS off in-game, zeroing it or letting it expire does not clear other valid SPS readings. Catalog changes remove individual missing signals, not entire depth calculators. Cheese map events use a constant Pure envelope under each device's independent cap, returning to the selected SPS waveform when the event ends.
 
 Your own Socket and Plug interactions are included automatically: the maximum of `Self` and `Others` wins. Enable `Avatar Self Interact` in VRChat and ensure the avatar outputs the corresponding OGB self-contact depth parameters. Attraction without a depth signal does not trigger output. See the [OGB setup guide](https://github.com/OscToys/osc.toys/blob/main/docs/20-getting-started.mdx).
 
@@ -184,10 +202,10 @@ The original map-integration endpoint `/api/v1/shock/<A|B|all>/<seconds>` accept
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-build.txt
 python -m unittest discover -v
-powershell -ExecutionPolicy Bypass -File build-wpf.ps1
+powershell -ExecutionPolicy Bypass -File build-winui.ps1
 ```
 
-The script builds a self-contained WPF frontend and a console-free Python backend, producing `dist\Neko-VRC-v2.0.0-win-x64.zip`. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration is stored under `%APPDATA%\Neko-VRC\`, not in the release directory.
+The script builds a self-contained WinUI 3 frontend and a console-free Python backend, producing `products\v2.0.0\Neko-VRC-WinUI-v2.0.0-win-x64.zip`. Isolated integration checks cover pages, bindings and both exit routes. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration is stored under `%APPDATA%\Neko-VRC\`, not in the release directory. WPF fallback builds also use `products\v2.0.0\`, with `WPF` in the artifact names.
 
 ## FAQ
 
@@ -220,7 +238,7 @@ The script builds a self-contained WPF frontend and a console-free Python backen
 ### Why is the strength always at the maximum available value?
 
 - Coyote uses the lower of its reported `intensityMax` and the matching limit on **Coyote A/B**; Opossum uses its matching independent limit on **Opossum A/B**.
-- SPS penetration depth `0..1` linearly scales waveform amplitude. Runtime Debug reports depth and the four waveform-amplitude samples (`0..100`) most recently sent to the App.
+- SPS penetration depth `0..1` linearly scales waveform amplitude. Pure sets each amplitude sample to the calculated ratio × 100 without preset modulation. The device strength cap is independent of this real-time ratio.
 
 ### The APP cannot connect/connection times out when scanning the QR code.
 

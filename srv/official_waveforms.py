@@ -1210,7 +1210,8 @@ OPOSSUM_WAVEFORMS = {'闹钟': ('0A0A0A0A64646464',
           '0A0A0A0A00000000')}
 
 WAVEFORMS_BY_DEVICE = {
-    'coyote': COYOTE_WAVEFORMS,
+    # App-defined constant envelope; keep the imported official tables intact.
+    'coyote': {'纯粹': ('0A0A0A0A64646464',), **COYOTE_WAVEFORMS},
     'opossum': OPOSSUM_WAVEFORMS,
 }
 WAVEFORM_NAMES_BY_DEVICE = {

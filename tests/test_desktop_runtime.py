@@ -64,6 +64,23 @@ def free_tcp_port():
 
 
 class ConfigManagerTests(unittest.TestCase):
+    def test_new_profiles_default_to_bluetooth_without_selecting_an_address(self):
+        with tempfile.TemporaryDirectory() as root:
+            settings, _basic = ConfigManager(app_dir=root, config_dir=Path(root) / 'profile').load()
+            for connection in settings['connections'].values():
+                self.assertEqual(connection['mode'], 'bluetooth')
+                self.assertEqual(connection['address'], '')
+
+    def test_saved_app_mode_is_not_overwritten_by_bluetooth_default(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = ConfigManager(app_dir=root, config_dir=Path(root) / 'profile')
+            settings, basic = manager.load()
+            for connection in settings['connections'].values():
+                connection['mode'] = 'app'
+            manager.save(settings, basic)
+            settings, _basic = manager.load()
+            self.assertTrue(all(connection['mode'] == 'app' for connection in settings['connections'].values()))
+
     def test_default_config_uses_neko_roaming_without_creating_legacy_directory(self):
         with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'APPDATA': root}):
             manager = ConfigManager(app_dir=Path(root) / 'app')
@@ -407,6 +424,7 @@ class UDPRelayTests(unittest.IsolatedAsyncioTestCase):
 class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_chatbox_uses_connected_app_and_bluetooth_routes(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
+        settings['connections']['coyote']['mode'] = 'app'
         settings['connections']['opossum']['mode'] = 'bluetooth'
         runtime = DeviceRuntime(settings)
         runtime.chatbox_manager = SimpleNamespace(update_chatbox=AsyncMock())
@@ -494,6 +512,36 @@ class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OSCQueryServiceTests(unittest.TestCase):
+    def test_live_inventory_counts_only_readable_complete_depth_and_exposes_fallbacks(self):
+        events = []
+        runtime = DeviceRuntime(apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS)), event_callback=events.append)
+        runtime.dispatcher = runtime._build_dispatcher()
+        self.addCleanup(runtime.chatbox_manager.cleanup, notify=False)
+        paths = (
+            '/avatar/parameters/OGB/Orf/Touch/TouchSelf',
+            '/avatar/parameters/OGB/Orf/Half/PenSelfNewRoot',
+            '/avatar/parameters/OGB/Orf/Complete/PenSelfNewRoot',
+            '/avatar/parameters/OGB/Orf/Complete/PenSelfNewTip',
+            '/avatar/parameters/OGB/Orf/WriteOnly/PenOthers',
+            '/avatar/parameters/OGB/Pen/Frot/FrotSelf',
+            '/avatar/parameters/OGB/Pen/Good/PenOthers',
+            PCS_PROXIMITY_ADDRESS, LMS_PROXIMITY_ADDRESS,
+        )
+        readable = tuple(path for path in paths if '/WriteOnly/' not in path)
+        async def apply():
+            try:
+                with patch('shocking_vrchat.find_avatar_sps_config', return_value=None):
+                    runtime._apply_avatar_snapshot(OSCQueryAvatarSnapshot('', paths, 'http://127.0.0.1:19000', readable))
+                await asyncio.sleep(0)
+                event = next(event for event in events if event['type'] == 'avatar')
+                self.assertEqual([zone['zone_id'] for zone in event['sockets']], ['Complete'])
+                self.assertEqual([zone['zone_id'] for zone in event['plugs']], ['Good'])
+                self.assertEqual(event['parameter_availability'], {'known': True, 'socket': True, 'plug': True, 'pcs': True, 'lms': True})
+            finally:
+                for handler in runtime.handlers:
+                    await handler.stop_background_jobs()
+        asyncio.run(apply())
+
     def test_query_access_and_scalar_values_are_validated(self):
         path = '/avatar/parameters/OGB/Pen/Locked/PenOthers'
         for access in (None, 0, 1, 2, 3, -1, 5, True, '1'):
@@ -1614,6 +1662,8 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
 
     def make_settings(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
+        for connection in settings['connections'].values():
+            connection['mode'] = 'app'
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
         settings['SERVER_IP'] = '127.0.0.1'
         settings['ws']['master_uuid'] = '86c053e8-4ce1-466b-b123-9e2944b8c490'
@@ -2009,6 +2059,9 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(controller.snapshot()['connected'])
                 self.assertEqual(await asyncio.to_thread(request_event, 'all'), {'result': 'OK'})
                 operations = await collect_operations(websocket)
+                map_waves = [op for method, op in operations if method == 'device.op' and op['t'] == 0]
+                self.assertTrue(map_waves)
+                self.assertTrue(all(op['v'] == ['0A0A0A0A64646464'] for op in map_waves))
                 self.assertEqual(
                     {(op['s'], op['c']) for method, op in operations
                      if method == 'device.op' and op['t'] == 0},
