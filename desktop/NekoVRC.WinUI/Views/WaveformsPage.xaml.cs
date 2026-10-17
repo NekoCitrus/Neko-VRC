@@ -1,15 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
+using Microsoft.UI.Xaml.Shapes;
 using Windows.ApplicationModel.DataTransfer;
-using Windows.Foundation;
 using Windows.Storage.Pickers;
 
 namespace NekoVRC.WinUI.Views;
@@ -25,7 +25,14 @@ public sealed partial class WaveformsPage : Page
     private MainViewModel? _model;
     private JsonObject _catalog = new();
     private readonly ObservableCollection<WaveformItem> _library = new(), _enabled = new();
-    private double[] _preview = Array.Empty<double>();
+    private byte[] _preview = Array.Empty<byte>();
+    private byte[] _previewFrequency = Array.Empty<byte>();
+    private double[] _previewPhase = Array.Empty<double>();
+    private readonly List<Rectangle> _histogramBars = new();
+    private readonly Stopwatch _previewClock = new();
+    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    internal bool IsPreviewAnimating => _previewTimer.IsEnabled;
+    internal int PreviewFrameCount { get; private set; }
     private int _previewVersion;
     private bool _updating, _working, _active;
     public Task LoadTask { get; private set; } = Task.CompletedTask;
@@ -35,6 +42,9 @@ public sealed partial class WaveformsPage : Page
     {
         InitializeComponent();
         LibraryList.ItemsSource = _library; EnabledList.ItemsSource = _enabled;
+        _previewTimer.Tick += PreviewTick;
+        Loaded += (_, _) => { if (_active && _preview.Length > 0) SetPreviewPlayback(PreviewPlayback.IsChecked == true); };
+        Unloaded += (_, _) => StopPreviewTimer();
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -47,7 +57,7 @@ public sealed partial class WaveformsPage : Page
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
-        _active = false; _previewVersion++;
+        _active = false; _previewVersion++; StopPreviewTimer();
         base.OnNavigatedFrom(e);
     }
 
@@ -81,8 +91,8 @@ public sealed partial class WaveformsPage : Page
         foreach (var item in items.Values.Where(p => !enabled.Contains(p.Id))) _library.Add(item);
         foreach (string id in enabled) _enabled.Add(items[id]);
         _updating = false;
-        FormatHint.Text = Kind == "coyote" ? "支持郊狼 .pulse、ZIP 或文件夹。拖到右侧加入选择框，拖回左侧移出。" : "负鼠库独立保存。仅导入标记为 opossum 的帧文件；郊狼 .pulse 不通用。";
-        _preview = Array.Empty<double>(); DrawPreview(); PreviewTitle.Text = "选择波形以预览";
+        FormatHint.Text = Kind == "coyote" ? "支持郊狼 .pulse、ZIP 或文件夹，拖到右侧加入选择框，拖回左侧移出，Ctrl / Shift 多选，拖动排序" : "负鼠库独立保存。仅导入标记为 opossum 的帧文件；郊狼 .pulse 不通用。";
+        ClearPreview();
     }
 
     private void KindChanged(object sender, SelectionChangedEventArgs e) { if (_model != null && !_working) Populate(); }
@@ -116,26 +126,120 @@ public sealed partial class WaveformsPage : Page
     {
         if (_updating || _model == null || !_active || e.AddedItems.LastOrDefault() is not WaveformItem item) return;
         int version = ++_previewVersion;
+        ClearPreview(); PreviewTitle.Text = item.Name;
         try {
             var data = await _model.WaveformOperationAsync("waveform_preview", new() { ["kind"] = Kind, ["id"] = item.Id });
             if (version != _previewVersion || !_active) return;
-            _preview = data["amplitudes"]!.AsArray().Select(n => n!.GetValue<double>()).ToArray();
-            PreviewTitle.Text = $"{item.Name} · {data["duration"]!.GetValue<double>():0.###} 秒"; DrawPreview();
+            _preview = Convert.FromHexString(data["sample_hex"]!.GetValue<string>());
+            _previewFrequency = Convert.FromHexString(data["frequency_hex"]?.GetValue<string>() ?? "");
+            if (_previewFrequency.Length != 0 && _previewFrequency.Length != _preview.Length) throw new InvalidOperationException("预览频率样本长度无效。");
+            _previewPhase = BuildPhase(_previewFrequency);
+            PreviewPlayback.IsEnabled = _preview.Length > 0;
+            SetPreviewPlayback(true);
         }
         catch (Exception exc) { if (_active && version == _previewVersion) { Notice.Message = exc.Message; Notice.IsOpen = true; } }
     }
 
     private void PreviewSizeChanged(object sender, SizeChangedEventArgs e) => DrawPreview();
+    private void ClearPreview()
+    {
+        StopPreviewTimer(); _previewClock.Reset();
+        _preview = Array.Empty<byte>(); _histogramBars.Clear(); PreviewCanvas.Children.Clear();
+        _previewFrequency = Array.Empty<byte>(); _previewPhase = Array.Empty<double>();
+        PreviewPlayback.IsEnabled = false; PreviewPlayback.IsChecked = true; PreviewPlaybackIcon.Glyph = "\uE769";
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(PreviewPlayback, "暂停预览");
+        PreviewTitle.Text = "";
+    }
+    private void StopPreviewTimer() { _previewTimer.Stop(); _previewClock.Stop(); }
+    private void TogglePreviewPlayback(object sender, RoutedEventArgs e) => SetPreviewPlayback(PreviewPlayback.IsChecked == true);
+    internal void SetPreviewPlayback(bool play)
+    {
+        PreviewPlayback.IsChecked = play; PreviewPlaybackIcon.Glyph = play ? "\uE769" : "\uE768";
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(PreviewPlayback, play ? "暂停预览" : "播放预览");
+        if (play && _active && IsLoaded && _preview.Length > 0) { _previewClock.Start(); _previewTimer.Start(); }
+        else StopPreviewTimer();
+        DrawPreview();
+    }
+    private void PreviewTick(object? sender, object e)
+    {
+        if (!_active || !IsLoaded || _preview.Length == 0 || PreviewPlayback.IsChecked != true) { StopPreviewTimer(); return; }
+        // Do not continuously repaint a hidden/tray window. Resume the visual
+        // clock on restore; this timer never submits a hardware command.
+        if (App.CurrentWindow?.AppWindow.IsVisible != true) {
+            _previewClock.Stop(); _previewTimer.Interval = TimeSpan.FromSeconds(1); return;
+        }
+        _previewTimer.Interval = TimeSpan.FromMilliseconds(33); _previewClock.Start(); DrawPreview();
+    }
     private void DrawPreview()
     {
-        var points = new PointCollection();
-        double width = Math.Max(0, PreviewArea.ActualWidth - 2), height = Math.Max(0, PreviewArea.ActualHeight - 4);
-        for (int i = 0; i < _preview.Length; i++) {
-            double x = 1 + i * width / Math.Max(1, _preview.Length - 1);
-            if (i > 0) points.Add(new Point(x, 2 + (1 - _preview[i - 1] / 100) * height));
-            points.Add(new Point(x, 2 + (1 - _preview[i] / 100) * height));
+        double width = Math.Max(0, PreviewCanvas.ActualWidth - 2), height = Math.Max(0, PreviewCanvas.ActualHeight - 4);
+        if (_preview.Length == 0 || width <= 0 || height <= 0) return;
+        double elapsedMs = _previewClock.Elapsed.TotalMilliseconds;
+        var geometry = PreviewGeometry(_preview, _previewPhase, elapsedMs, width, height);
+        while (_histogramBars.Count < geometry.Count) {
+            var bar = new Rectangle { Style = (Style)Resources["HistogramBarStyle"], IsHitTestVisible = false };
+            _histogramBars.Add(bar); PreviewCanvas.Children.Add(bar);
         }
-        PreviewLine.Points = points;
+        for (int i = 0; i < _histogramBars.Count; i++) {
+            var bar = _histogramBars[i];
+            bar.Visibility = i < geometry.Count ? Visibility.Visible : Visibility.Collapsed;
+            if (i >= geometry.Count) continue;
+            var point = geometry[i];
+            bar.Width = point.Width; bar.Height = point.Height; bar.Opacity = .8;
+            Canvas.SetLeft(bar, 1 + point.X); Canvas.SetTop(bar, 2 + height - bar.Height);
+        }
+        PreviewFrameCount++;
+    }
+
+    internal readonly record struct PreviewBar(double X, double Width, double Height);
+
+    internal static double[] BuildPhase(byte[] frequencies)
+    {
+        if (frequencies.Length == 0) return Array.Empty<double>();
+        var phase = new double[frequencies.Length + 1];
+        for (int i = 0; i < frequencies.Length; i++) phase[i + 1] = phase[i] + .025 * FrequencyHz(frequencies[i]);
+        return phase;
+    }
+
+    // Integrate frequency through each exact 25 ms sample, preserving phase at
+    // changes and loop boundaries. One bar per cycle: height is amplitude and
+    // spacing is actual period. A fixed 2 s window bounds rendering to <= 201
+    // pulses at 100 Hz. Opossum has no electrical frequency: show its envelope.
+    internal static List<PreviewBar> PreviewGeometry(byte[] amplitudes, double[] phase, double elapsedMs, double width, double height)
+    {
+        var bars = new List<PreviewBar>();
+        if (amplitudes.Length == 0 || width <= 0 || height <= 0) return bars;
+        const double window = 2000;
+        double left = elapsedMs - window;
+        long start = (long)Math.Floor(left / 25), end = (long)Math.Ceiling(elapsedMs / 25);
+        for (long cursor = start; cursor < end; cursor++) {
+            int index = (int)((cursor % amplitudes.Length + amplitudes.Length) % amplitudes.Length);
+            double from = Math.Max(left, cursor * 25), to = Math.Min(elapsedMs, (cursor + 1) * 25);
+            double amplitude = height * Math.Clamp((int)amplitudes[index], 0, 100) / 100;
+            if (phase.Length == 0) {
+                double x = (from - left) / window * width;
+                bars.Add(new(x, Math.Max(0, (to - from) / window * width - 1), amplitude));
+                continue;
+            }
+            double cyclesPerSample = phase[index + 1] - phase[index];
+            double absolutePhase = Math.Floor((double)cursor / amplitudes.Length) * phase[^1] + phase[index];
+            double phaseFrom = absolutePhase + (from - cursor * 25) / 25 * cyclesPerSample;
+            double phaseTo = absolutePhase + (to - cursor * 25) / 25 * cyclesPerSample;
+            for (double cycle = Math.Ceiling(phaseFrom - 1e-9); cycle < phaseTo - 1e-9; cycle++) {
+                double time = cursor * 25 + (cycle - absolutePhase) / cyclesPerSample * 25;
+                double x = Math.Clamp((time - left) / window * width, 0, width);
+                double barWidth = Math.Min(3, 25 / cyclesPerSample / window * width * .3);
+                bars.Add(new(x, Math.Min(barWidth, width - x), amplitude));
+            }
+        }
+        return bars;
+    }
+
+    // Official Coyote V3 period compression; display real Hz, not wire bytes.
+    internal static double FrequencyHz(byte encoded)
+    {
+        double period = encoded <= 100 ? encoded : encoded <= 200 ? 100 + (encoded - 100) * 5 : 600 + (encoded - 200) * 10;
+        return 1000 / Math.Clamp(period, 10, 1000);
     }
 
     private void WaveDragStarting(object sender, DragItemsStartingEventArgs e)

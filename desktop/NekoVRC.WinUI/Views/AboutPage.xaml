@@ -4,9 +4,9 @@
  <ScrollViewer Tag="PageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
   <StackPanel Spacing="6">
    <toolkit:SettingsCard Header="Neko-VRC" Description="VRChat OSC · 郊狼 / 负鼠 · QQ交流群 1130363303" MinHeight="52" Padding="12,8">
-    <TextBlock Text="v2.0.0"/>
+    <TextBlock Text="v2.0.1"/>
    </toolkit:SettingsCard>
-   <TextBlock Text="来源" Margin="0,4,0,4"/>
+   <TextBlock Text="相关来源" Margin="0,4,0,4"/>
    <ItemsControl ItemsSource="{Binding Credits}"><ItemsControl.ItemTemplate><DataTemplate>
     <toolkit:SettingsCard Header="{Binding Name}" Description="{Binding Url}" Margin="0,0,0,4" MinHeight="52" Padding="12,8">
      <HyperlinkButton Content="打开" NavigateUri="{Binding Url}"/>

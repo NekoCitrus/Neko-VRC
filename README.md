@@ -3,7 +3,7 @@
 
 [English version](README_en.md)
 
-当前版本：**v2.0.0**。源码默认前端已改为 WinUI 3；包含电脑直连蓝牙、独立四通道触发、OSCQuery 参数读取与回退提示，以及精简的多设备 chatbox 显示。上方截图为旧版界面。
+当前版本：**v2.0.1**。提供安装版和免安装版，包含 WinUI 3、独立波形库、电脑直连蓝牙、四通道触发与 OSCQuery 参数读取。上方截图为旧版界面。
 
 一个通过 VRChat OSC 读取 Avatar SPS/OGB 插入深度，并联动郊狼 DG-LAB 3.0 或负鼠振动控制器的小工具。
 
@@ -15,7 +15,7 @@
 ## 使用方式
 
 1. 前往 [本项目 Release](https://github.com/NekoCitrus/Neko-VRC/releases) 下载最新版本的 Neko-VRC
-2. 完整解压发布包，运行 `Neko-VRC.exe`。WinUI 3 界面跟随 Windows 浅色 / 深色主题，自动启动后台服务；无需另装 Python、.NET 或 Windows App Runtime。Windows 11 使用系统窗口圆角，Windows 10 外观随系统能力降级。
+2. 推荐运行 `Neko-VRC-Setup-v2.0.1-win-x64.exe` 安装；也可完整解压 ZIP 后运行 `Neko-VRC.exe`。安装版默认位于 `%LOCALAPPDATA%\Programs\Neko-VRC`，无需管理员权限，开始菜单可打开，桌面快捷方式可选。WinUI 3 界面跟随 Windows 浅色 / 深色主题，自动启动后台服务；无需另装 Python、.NET 或 Windows App Runtime。Windows 11 使用系统窗口圆角，Windows 10 外观随系统能力降级。
 3. 在“郊狼设置”和“负鼠设置”中勾选各通道的触发来源，并设置部位、参数、波形和强度上限。
 4. 设置修改后自动应用并保存，无需点击保存；连续拖动会约每 120 毫秒合并更新一次。已有 APP 连接不会断开。首次联网时如弹出 Windows 防火墙提示，请选择允许。
 5. 每类设备分别选择 **App** 或 **蓝牙直连**，新配置默认蓝牙直连，已保存的连接方式不会被覆盖。App 模式使用 DG-LAB 4 APP 的 Socket 扫码；直连模式点击“扫描蓝牙”、选择主机，再点击“连接”。连接前请释放手机对该主机的蓝牙连接。
@@ -29,7 +29,7 @@
 - **运行调试**：只显示郊狼/负鼠各通道的计算强度与设备回报强度，数值不变不重复打印，新记录自动滚动到底部。未取得设备回报时显示“未反馈”。连接状态与电量在各自设置页查看。
 - **版权信息**：显示项目、代码来源、前端贡献者与开源许可。
 
-“基本设置 → 管理波形”进入独立子页面。郊狼、负鼠各自维护波形库与通道选择框列表；可多选拖入 / 拖出、在右侧拖动排序，修改即时保存，无需重连。点击波形预览强度形状，不会启动主机。支持从 ZIP、文件夹或单个 / 多个 `.pulse` 导入，重复内容跳过并汇总提示。正在被通道使用的波形需先更换后才能移出。
+点击“基本设置 → 波形库”右侧箭头进入子页面，点击上级标题“基本设置”返回。郊狼、负鼠各自维护波形库与通道选择框列表；可多选拖入 / 拖出、在右侧拖动排序，修改即时保存，无需重连。选择波形后以动态柱状图循环预览幅值，可单独暂停预览，不会启动主机。支持从 ZIP、文件夹或单个 / 多个 `.pulse` 导入，重复内容跳过并汇总提示。正在被通道使用的波形需先更换后才能移出。
 
 样例包是郊狼 App 格式，不能作为负鼠波形使用。负鼠导入目前仅支持带设备标记的帧交换文件，不承诺识别未知的官方 App 导出格式。格式、兼容边界见 [波形库](doc/waveform-library.md)。导入内容保存在 `%APPDATA%\Neko-VRC\waveforms\library.json`，不打入发布包。
 
@@ -43,13 +43,13 @@
 
 “暂停”停止所有输出，点击“恢复”后重新接收触发。首次连接、重连和输入过期时从零输出开始，不恢复旧波形。断线情况下无法保证归零指令到达硬件，请使用主机实体停止按钮。
 
-窗口默认尺寸为 940 × 640，最小尺寸为 880 × 640（随 DPI 缩放）。标题右侧仅保留“暂停 / 恢复”，服务状态、参数提示与 Avatar 名称位于按钮同一行左侧，长名称省略并可悬停查看。主窗口不再提供保存或重复的退出按钮。扫码、扫描、连接、断开仍在原位置。标题区与设置卡片保持紧凑，保留原生切页和蓝条动画。关闭退出时立即隐藏窗口，在后台保存有效设置并完成清理；启用托盘运行时关闭仍只进入托盘。
+窗口默认尺寸为 940 × 640，最小尺寸为 880 × 640（随 DPI 缩放）。标题右侧仅保留一个与波形预览同款的暂停 / 播放图标按钮，依据后台确认的暂停状态切换，耗时操作期间仍可暂停。服务状态、参数提示与 Avatar 名称位于按钮同一行左侧，长名称省略并可悬停查看。主窗口不再提供保存或重复的退出按钮。扫码、扫描、连接、断开仍在原位置。标题区与设置卡片保持紧凑，保留原生切页和蓝条动画。关闭退出时立即隐藏窗口，在后台保存有效设置并完成清理；启用托盘运行时关闭仍只进入托盘。
 
 ### 跟随 SteamVR 启动
 
 “基本设置”中的“跟随 SteamVR 启动”复选框通过 OpenVR 应用清单启用或关闭 SteamVR 自动启动。更改该选项前请先启动 SteamVR，勾选后自动应用。清单保存在 `%APPDATA%\Neko-VRC\steamvr\`；程序启动时会重新校验并修复 exe 移动后的路径。
 
-该功能不会使用 Windows 开机启动项，也不会自行启动或轮询 SteamVR。SteamVR 首次读取新清单时可能要求重启 SteamVR；窗口会显示相应提示，并在下一次启动时继续完成设置。
+该功能不会使用 Windows 开机启动项，也不会自行启动或轮询 SteamVR。开启或保存失败时，开关恢复为上次成功保存的状态，不会一直显示已开启或自动重试。SteamVR 首次读取新清单时可能要求重启 SteamVR；未确认启用前开关保持关闭，重启 SteamVR 后可再次开启。
 
 ## 配置文件
 
@@ -83,7 +83,9 @@ App 模式下，郊狼与负鼠可经同一条 DG-LAB 4 APP Socket V4 连接控�
 powershell -ExecutionPolicy Bypass -File build-winui.ps1
 ```
 
-输出目录为 `products/v2.0.0/Neko-VRC-WinUI-win-x64/`，压缩包为 `products/v2.0.0/Neko-VRC-WinUI-v2.0.0-win-x64.zip`。成品按版本保存在 `products/`，后台编译中间文件保存在 `build/`；原 `dist/` 保留历史产物，后续标准构建不再往里面写入。这是免安装 x64 包，必须完整分发，不能只复制前端 exe。
+输出目录为 `products/v2.0.1/Neko-VRC-WinUI-win-x64/`，压缩包为 `products/v2.0.1/Neko-VRC-WinUI-v2.0.1-win-x64.zip`。成品按版本保存在 `products/`，后台编译中间文件保存在 `build/`；原 `dist/` 保留历史产物，后续标准构建不再往里面写入。免安装包必须完整分发，不能只复制前端 exe。
+
+安装版需准备 [Inno Setup 6.7.3+](https://jrsoftware.org/isdl.php)，运行 `powershell -ExecutionPolicy Bypass -File build-installer.ps1`；可用 `-ISCC` 指定编译器，已构建当前版本时可用 `-SkipAppBuild`。输出同目录下的 `Neko-VRC-Setup-v2.0.1-win-x64.exe` 和 `SHA256SUMS.txt`。默认验证安装、文件完整性、覆盖升级、安装后界面及卸载；发现已有安装时不会覆盖测试。正在运行时必须先手动退出，不自动中断设备。安装、升级和卸载均保留 `%APPDATA%\Neko-VRC` 配置与波形库及运行日志；卸载前请先在软件中关闭 SteamVR 跟随启动。安装包未做代码签名，Windows 可能显示未知发布者提示。
 
 试验构建可添加 `-ProductDirectory products/v2.0.0-waveforms-preview`，输出到独立目录。脚本发现目标成品正在运行时会拒绝覆盖，不会自动结束软件或设备连接。
 
@@ -107,7 +109,7 @@ WinUI 3 使用原生 `NavigationView`（选中指示条动画）、`TitleBar` �
 - **SPS Socket 被插入深度**：读取 `OGB/Orf/<部位>` 的 Root/Tip 数据，按 OGB 算法估算插入深度。
 - **SPS Plug 插入深度**：读取 `OGB/Pen/<部位>` 的 `PenSelf/PenOthers` 深度。
 - **额外参数**：按旧 distance 算法将数值从默认 `0～1` 范围映射为深度；0.5 秒未更新即失效。
-- **监听 PCS**：无有效 Socket 深度参数时，使用 `/avatar/parameters/pcs/contact/proximity` 按 distance 计算。
+- **监听 PCS**：始终使用 `/avatar/parameters/pcs/contact/proximity` 按 distance 参与计算，与其他已启用来源取最大值。
 - **监听 LMS**：所选 Plug 深度为 0 时，使用 `/avatar/parameters/lms/contact/proximity` 按 distance 计算。
 
 | 触发来源 | 郊狼 A/B 默认 | 负鼠 A/B 默认 |
@@ -118,7 +120,7 @@ WinUI 3 使用原生 `NavigationView`（选中指示条动画）、`TitleBar` �
 
 Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”部位。程序通过 OSCQuery 读取当前 Avatar 和 SPS 部位；`/avatar/change` 仅用于要求立即刷新。
 
-仅可读的数值参数参与可用性判断。部位列表及数量仅包含可计算深度的插座/插头：完整同部位同来源 Root/Tip 对或直接深度，不计 Touch/Frot、半对和不可读信号。Socket 回退判定以实际读到的有效深度信号为准，零值也有效；仅声明了参数不会阻止 PCS 回退。OSCQuery 当前值用于补充实时 OSC，超过 0.5 秒失效，暂停时不用于恢复输出。
+仅可读的数值参数参与可用性判断。部位列表及数量仅包含可计算深度的插座/插头：完整同部位同来源 Root/Tip 对或直接深度，不计 Touch/Frot、半对和不可读信号。插座深度参数是否存在不影响已启用 PCS 的强度贡献。OSCQuery 当前值用于补充实时 OSC，超过 0.5 秒失效，暂停时不用于恢复输出。
 
 参数提示统一放在顶部服务状态右侧，不再在每个通道重复显示。尚未发现模型时提示“等待读取模型 OSC 参数”；缺少深度且存在对应回退参数时推荐使用 PCS/LMS；深度和回退均不存在时提示“无任何可用插座/插头参数”。提示不会自动修改复选框。PCS、LMS 和参数/地图事件后的问号可悬停查看说明。
 
@@ -130,7 +132,7 @@ Socket 和 Plug 可分别选择指定部位或“任何当前正在触发的”�
 
 勾选“监听 LMS”后，该通道所选 Plug 的 `PenSelf/PenOthers` 深度均为 0 时，LMS 按通道的 distance 上下限（默认 `0～1`）参与计算；任一 Plug 深度大于 0 时忽略 LMS。郊狼也可手动勾选 LMS。
 
-勾选“监听 PCS”后，仅在缺少匹配的有效 Socket 深度参数时才使用 PCS。有效参数指同部位、同来源的完整 Root/Tip 对，或旧版 `PenSelf/PenOthers`，类型需支持数值；深度为 0 不会启用 PCS。判定参考当前 OSCQuery 参数树和实际 Socket 信号，随模型、参数和部位变化更新。
+勾选“PCS 回退”后，无论是否有可计算深度的插座，PCS 都按通道的 distance 上下限参与计算，与其他已启用来源取最大值；关闭后不参与。PCS 不受插座部位选择或深度为 0 的影响。
 
 PCS 和 LMS 各自受对应复选框控制，不依赖“参数 / 地图事件”开关，0.5 秒未更新即失效。关闭 Socket / Plug 只关闭其强度贡献，必要的回退状态检测仍会保留。修改触发项仅清理相应输入；修改上限或波形不清空深度，无需重新扫码。
 
@@ -244,7 +246,7 @@ python -m unittest discover -v
 powershell -ExecutionPolicy Bypass -File build-winui.ps1
 ```
 
-脚本构建自带运行时的 WinUI 3 前端及无控制台 Python 后台，生成 `products\v2.0.0\Neko-VRC-WinUI-v2.0.0-win-x64.zip`，并使用隔离配置验证页面绑定、退出按钮和系统关闭。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置保存在 `%APPDATA%\Neko-VRC\`，不写入发布目录。WPF 回退构建同样输出到 `products\v2.0.0\`，文件名包含 `WPF`。
+脚本构建自带运行时的 WinUI 3 前端及无控制台 Python 后台，生成 `products\v2.0.1\Neko-VRC-WinUI-v2.0.1-win-x64.zip`，并使用隔离配置验证页面绑定及两种关闭路径。解压后运行完整目录中的 `Neko-VRC.exe`，保留 `backend` 子目录。配置保存在 `%APPDATA%\Neko-VRC\`，不写入发布目录。WPF 回退构建同样输出到 `products\v2.0.1\`，文件名包含 `WPF`。
 
 ## FAQ
 

@@ -246,6 +246,7 @@ public sealed class MainViewModel : Observable
         new Credit("Bleak", "https://github.com/hbldh/bleak"),
     };
     private readonly BackendClient _client;
+    private readonly Func<string, JsonObject?, Task<JsonObject>> _call;
     private readonly SemaphoreSlim _applyGate = new(1);
     private CancellationTokenSource? _applyDelay;
     private bool _applyRequested;
@@ -261,10 +262,20 @@ public sealed class MainViewModel : Observable
     private string _parameterHint = "等待读取模型 OSC 参数";
     public string ParameterHint { get => _parameterHint; private set { Set(ref _parameterHint, value); Changed(nameof(StatusLine)); } }
     public string StatusLine => string.Join(" · ", new[] { Status, ParameterHint, string.IsNullOrWhiteSpace(Avatar) || Avatar == "尚未读取 Avatar" ? "" : Avatar }.Where(part => !string.IsNullOrWhiteSpace(part)));
+    private bool _outputPaused;
+    public bool OutputPaused { get => _outputPaused; private set {
+        if (_outputPaused == value) return;
+        Set(ref _outputPaused, value); Changed(nameof(PauseResumeLabel));
+        Changed(nameof(ServicePlaybackActive)); Changed(nameof(PauseResumeGlyph)); Command.Requery();
+    } }
+    public string PauseResumeLabel => OutputPaused ? "恢复" : "暂停";
+    public string PauseResumeGlyph => OutputPaused ? "\uE768" : "\uE769";
+    public bool ServicePlaybackActive => !OutputPaused;
     public string Logs { get => _logs; set => Set(ref _logs, value); }
-    private bool _background, _steamVR, _chatbox;
+    private bool _background, _steamVR, _chatbox, _restoringSteamVR;
+    private int _steamVRRevision;
     public bool Background { get => _background; set => Set(ref _background, value); }
-    public bool SteamVR { get => _steamVR; set => Set(ref _steamVR, value); }
+    public bool SteamVR { get => _steamVR; set { if (_steamVR == value) return; _steamVRRevision++; Set(ref _steamVR, value); } }
     public bool Chatbox { get => _chatbox; set => Set(ref _chatbox, value); }
     public IReadOnlyList<Zone> ThemeChoices { get; } = new[] { new Zone("system", "跟随系统"), new Zone("light", "浅色模式"), new Zone("dark", "深色模式") };
     private string _theme = "system";
@@ -280,7 +291,7 @@ public sealed class MainViewModel : Observable
     private async Task PersistThemeAsync(Task previous, string theme)
     {
         await previous;
-        try { await _client.CallAsync("set_theme", new() { ["theme"] = theme }); }
+        try { await _call("set_theme", new() { ["theme"] = theme }); }
         catch (Exception exc) { OperationError?.Invoke("主题保存失败：" + exc.Message); }
     }
     public ObservableCollection<DeviceViewModel> Devices { get; } = new();
@@ -295,18 +306,28 @@ public sealed class MainViewModel : Observable
     public ICommand PageCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand ResumeCommand { get; }
+    public ICommand PauseResumeCommand { get; }
     public event Action<JsonArray>? QrReady;
     public event Action<string>? OperationError;
     public event Action? WaveformsRequested;
     public ICommand WaveformsCommand { get; }
     public ICommand QrCommand { get; }
 
-    public MainViewModel(BackendClient client)
+    public MainViewModel(BackendClient client) : this(client, client.CallAsync) { }
+
+    internal MainViewModel(BackendClient client, Func<string, JsonObject?, Task<JsonObject>> call)
     {
-        _client = client;
+        _client = client; _call = call;
         PageCommand = new Command(p => SelectPage(p?.ToString() ?? "general"));
         StopCommand = new Command(_ => { _client.EmergencyStop(); Status = "正在暂停…"; }, () => Ready);
         ResumeCommand = new Command(_ => Run(() => DeviceActionAsync("resume")), () => Ready && !Busy);
+        // Use confirmed backend state, not an optimistic toggle. Repeated clicks
+        // before pause acknowledgement repeat pause instead of resuming early.
+        // Pause keeps its independent stop-event path even during slow IPC.
+        PauseResumeCommand = new Command(_ => {
+            if (OutputPaused) ResumeCommand.Execute(null);
+            else StopCommand.Execute(null);
+        }, () => Ready && (!OutputPaused || !Busy));
         QrCommand = new Command(_ => Run(() => ShowQrAsync()), () => Ready && !Busy);
         WaveformsCommand = new Command(_ => WaveformsRequested?.Invoke(), () => Ready);
         PropertyChanged += (_, e) => { if (e.PropertyName is nameof(Background) or nameof(SteamVR) or nameof(Chatbox)) ScheduleApply(); };
@@ -316,12 +337,12 @@ public sealed class MainViewModel : Observable
     {
         foreach (var device in Devices.Where(d => kind == null ? !d.HasBluetoothConnection : d.Kind == kind)) device.Mode = "app";
         await SaveAsync();
-        var response = await _client.CallAsync("qr"); QrReady?.Invoke(response["data"]!["matrix"]!.AsArray());
+        var response = await _call("qr", null); QrReady?.Invoke(response["data"]!["matrix"]!.AsArray());
     }
 
     private void ScheduleApply()
     {
-        if (!Ready) return;
+        if (!Ready || _restoringSteamVR) return;
         _applyRequested = true;
         if (!PendingApplyTask.IsCompleted && _applyDelay is { IsCancellationRequested: false }) return;
         _applyDelay?.Dispose();
@@ -331,8 +352,13 @@ public sealed class MainViewModel : Observable
     private async Task ApplyAfterEditAsync(CancellationToken token)
     {
         while (_applyRequested && !token.IsCancellationRequested) {
-            _applyRequested = false;
-            try { await Task.Delay(120, token); await SaveAsync(); OperationError?.Invoke(""); }
+            try {
+                await Task.Delay(120, token);
+                // This save includes edits made during the throttle window.
+                // Only edits arriving DURING the save require another pass.
+                _applyRequested = false;
+                await SaveAsync(); OperationError?.Invoke("");
+            }
             catch (OperationCanceledException) { return; }
             catch (Exception exc) { OperationError?.Invoke("未应用：" + exc.Message); }
         }
@@ -352,7 +378,7 @@ public sealed class MainViewModel : Observable
 
     public async Task InitializeAsync()
     {
-        var response = await _client.CallAsync("init");
+        var response = await _call("init", null);
         var data = response["data"]!.AsObject();
         _settings = (JsonObject)data["settings"]!.DeepClone(); _basic = (JsonObject)data["basic"]!.DeepClone();
         _appliedSettings = (JsonObject)_settings.DeepClone(); _appliedBasic = (JsonObject)_basic.DeepClone();
@@ -370,7 +396,7 @@ public sealed class MainViewModel : Observable
             Devices.Add(device);
         }
         UpdateWaveformCatalog(data["waveform_catalog"]!.AsObject());
-        Ready = true; Status = "后台已连接";
+        Status = "后台已连接";
         foreach (var device in Devices) {
             device.PropertyChanged += (_, e) => { if (e.PropertyName is nameof(DeviceViewModel.Mode) or nameof(DeviceViewModel.Address) or nameof(DeviceViewModel.Model)) ScheduleApply(); };
             foreach (var channel in device.Channels) channel.PropertyChanged += (_, e) => {
@@ -379,6 +405,7 @@ public sealed class MainViewModel : Observable
             };
         }
         foreach (string p in new[] { nameof(Background), nameof(SteamVR), nameof(Chatbox), nameof(CurrentDevice) }) Changed(p);
+        Ready = true;
         Command.Requery();
     }
 
@@ -395,6 +422,7 @@ public sealed class MainViewModel : Observable
     {
         await ThemeSaveTask;
         await _applyGate.WaitAsync();
+        int steamVRRevision = _steamVRRevision;
         try {
         var settings = (JsonObject)_settings.DeepClone(); var basic = (JsonObject)_basic.DeepClone();
         settings["general"]!["run_in_background"] = Background;
@@ -412,15 +440,24 @@ public sealed class MainViewModel : Observable
             }
         }
         if (!JsonNode.DeepEquals(settings, _appliedSettings) || !JsonNode.DeepEquals(basic, _appliedBasic))
-            await _client.CallAsync("save", new() { ["settings"] = settings, ["basic"] = basic });
+            await _call("save", new() { ["settings"] = settings, ["basic"] = basic });
         _appliedSettings = (JsonObject)settings.DeepClone(); _appliedBasic = (JsonObject)basic.DeepClone();
         _settings = settings; _settings["general"]!["theme"] = Theme; _basic = basic;
+        } catch {
+            // Only revert the attempted value, never overwrite a newer edit.
+            // Notify the binding without scheduling a recursive save/retry.
+            if (steamVRRevision == _steamVRRevision) {
+                _restoringSteamVR = true;
+                try { SteamVR = _appliedSettings["general"]?["steamvr_auto_start"]?.GetValue<bool>() ?? false; }
+                finally { _restoringSteamVR = false; }
+            }
+            throw;
         } finally { _applyGate.Release(); }
     }
 
     public async Task DeviceActionAsync(string action, string? kind = null)
     {
-        var response = await _client.CallAsync(action, kind == null ? null : new() { ["kind"] = kind });
+        var response = await _call(action, kind == null ? null : new() { ["kind"] = kind });
         UpdateState(response["data"]!.AsObject());
     }
 
@@ -437,19 +474,19 @@ public sealed class MainViewModel : Observable
         await FlushSettingsAsync();
         await _applyGate.WaitAsync();
         try {
-            var response = (await _client.CallAsync(method, data))["data"]!.AsObject();
+            var response = (await _call(method, data))["data"]!.AsObject();
             if (response["catalog"] is JsonObject catalog) UpdateWaveformCatalog(catalog);
             return response;
         } finally { _applyGate.Release(); }
     }
 
     public Task ScanAsync(DeviceViewModel device) => device.ScanAsync(async () =>
-        (await _client.CallAsync("scan"))["data"]!.AsArray());
+        (await _call("scan", null))["data"]!.AsArray());
 
     public async Task PollAsync()
     {
         if (!Ready || Busy) return;
-        var response = await _client.CallAsync("snapshot"); UpdateState(response["data"]!.AsObject());
+        var response = await _call("snapshot", null); UpdateState(response["data"]!.AsObject());
     }
 
     public void UpdateState(JsonObject data)
@@ -466,6 +503,7 @@ public sealed class MainViewModel : Observable
         ParameterHint = !known ? "等待读取模型 OSC 参数" : fallbacks.Count > 0 ? "推荐使用 " + string.Join("/", fallbacks) + " 回退" : !sockets && !plugs ? "无任何可用插座/插头参数" : "";
         var runtime = data["runtime"]?.AsObject();
         bool paused = runtime?["output_paused"]?.GetValue<bool>() ?? false;
+        OutputPaused = paused;
         Status = paused ? "已暂停 · 点击恢复后重新接收触发" : data["service"]?.GetValue<string>() == "running" ? "服务运行中" : "服务已停止";
         Logs = string.Join(Environment.NewLine, data["logs"]?.AsArray().Select(x => x!.GetValue<string>()) ?? Array.Empty<string>());
         foreach (var device in Devices) {

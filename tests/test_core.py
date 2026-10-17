@@ -285,7 +285,8 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
                         handler.osc_handler('/avatar/parameters/OGB/Pen/Test/PenSelf',
                                             (SPS_PLUG, 'PenSelf'), 0.4)
                         await asyncio.sleep(0)
-                        expected = max(0.3 if socket else 0, 0.4 if plug else 0, 0.5 if extra else 0)
+                        expected = max(0.3 if socket else 0, 0.4 if plug else 0,
+                                       0.9 if pcs else 0, 0.5 if extra else 0)
                         self.assertEqual(handler.current_strength_percentage, expected)
                         self.assertEqual(await handler.trigger_map_event(0.1), extra)
                         self.assertEqual(handler.current_strength_percentage, 1 if extra else expected)
@@ -329,7 +330,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await handler.stop_background_jobs()
 
-    async def test_disabled_socket_keeps_valid_parameter_guard_for_enabled_pcs(self):
+    async def test_disabled_socket_does_not_suppress_enabled_pcs(self):
         settings = make_settings()
         settings['dglab3']['coyote']['channel_a']['socket_enabled'] = False
         handler = ShockHandler(settings, FakeDGConnection(), 'A')
@@ -338,7 +339,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
             handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 1)
             await asyncio.sleep(0)
             self.assertTrue(handler.socket_depth_available)
-            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertEqual(handler.current_strength_percentage, 1)
         finally:
             await handler.stop_background_jobs()
 
@@ -383,7 +384,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await handler.stop_background_jobs()
 
-    async def test_declared_socket_needs_values_before_it_disables_pcs(self):
+    async def test_declared_and_live_socket_values_never_disable_pcs(self):
         base = '/avatar/parameters/OGB/Orf/TestSocket/'
         for signals in (('PenSelf',), ('PenOthersNewRoot', 'PenOthersNewTip')):
             with self.subTest(signals=signals):
@@ -398,8 +399,8 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
                         handler.osc_handler(base + signal, (SPS_SOCKET, signal), 0)
                     await asyncio.sleep(0)
                     self.assertTrue(handler.socket_depth_available)
-                    self.assertEqual(handler.current_strength_percentage, 0)
-                    self.assertFalse(handler.is_active)
+                    self.assertEqual(handler.current_strength_percentage, 1)
+                    self.assertTrue(handler.is_active)
                 finally:
                     await handler.stop_background_jobs()
 
@@ -416,21 +417,51 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
             handler.osc_handler(base + 'PenSelfNewTip', (SPS_SOCKET, 'PenSelfNewTip'), 0)
             await asyncio.sleep(0)
             self.assertTrue(handler.socket_depth_available)
-            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
         finally:
             await handler.stop_background_jobs()
 
-    async def test_pcs_extra_binding_cannot_bypass_socket_availability(self):
+    async def test_pcs_extra_binding_uses_independent_pcs_source(self):
         handler = ShockHandler(make_settings(), FakeDGConnection(), 'A')
         try:
             handler.set_avatar_parameters(('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',))
             handler.osc_handler('/avatar/parameters/OGB/Orf/TestSocket/PenSelf', (SPS_SOCKET, 'PenSelf'), 0)
             handler.osc_handler(PCS_PROXIMITY_ADDRESS, ('extra', 'value'), 1)
             await asyncio.sleep(0)
-            self.assertEqual(handler.current_strength_percentage, 0)
+            self.assertEqual(handler.current_strength_percentage, 1)
+            self.assertEqual(handler.active_source, SOURCE_PCS)
             self.assertNotIn(PCS_PROXIMITY_ADDRESS, handler.extra_values)
         finally:
             await handler.stop_background_jobs()
+
+    async def test_pcs_competes_with_live_socket_for_both_devices_and_channels(self):
+        for kind, channel in product(('coyote', 'opossum'), ('A', 'B')):
+            with self.subTest(device=kind, channel=channel):
+                settings = make_settings()
+                config = copy.deepcopy(settings['dglab3'][kind]['channel_a'])
+                config.update(pcs_enabled=True, lms_enabled=False)
+                settings['dglab3'][kind][f'channel_{channel.lower()}'] = config
+                handler = ShockHandler(settings, FakeDGConnection(), channel, device_kind=kind)
+                try:
+                    handler.osc_handler('/avatar/parameters/OGB/Orf/TestSocket/PenSelf',
+                                        (SPS_SOCKET, 'PenSelf'), 0.4)
+                    for pcs, expected, source in ((0.8, 0.8, SOURCE_PCS), (0.2, 0.4, SPS_SOCKET)):
+                        handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), pcs)
+                        await asyncio.sleep(0)
+                        self.assertTrue(handler.socket_depth_available)
+                        self.assertEqual(handler.current_strength_percentage, expected)
+                        self.assertEqual(handler.active_source, source)
+                    handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.9)
+                    self.assertEqual(handler._winner(now=handler.pcs_value[1] + 0.01)[0], 0.4)
+                    updated = copy.deepcopy(handler.shock_settings)
+                    updated['pcs_enabled'] = False
+                    await handler.hot_update(updated)
+                    handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 1)
+                    await asyncio.sleep(0)
+                    self.assertEqual(handler.current_strength_percentage, 0.4)
+                    self.assertEqual(handler.active_source, SPS_SOCKET)
+                finally:
+                    await handler.stop_background_jobs()
 
     async def test_pcs_timeout_clears_output_without_restarting_old_value(self):
         connection = FakeDGConnection()
@@ -500,7 +531,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
             handler.osc_handler(socket, (SPS_SOCKET, 'PenSelf'), 0.7)
             handler.osc_handler(PCS_PROXIMITY_ADDRESS, (SOURCE_PCS, 'value'), 0.8)
             await asyncio.sleep(0)
-            self.assertEqual(handler.current_strength_percentage, 0.7)
+            self.assertEqual(handler.current_strength_percentage, 0.8)
             handler.set_avatar_parameters((PCS_PROXIMITY_ADDRESS,))
             await asyncio.sleep(0)
             self.assertEqual(handler.current_strength_percentage, 0)

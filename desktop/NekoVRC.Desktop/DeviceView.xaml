@@ -46,7 +46,7 @@
        <ComboBox Grid.Column="4" ItemsSource="{Binding PlugZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding PlugZone}"/>
       </Grid>
       <WrapPanel Margin="0,6,0,6">
-       <CheckBox Content="PCS 回退" ToolTip="无有效 Socket 深度参数时，使用 pcs/contact/proximity。" IsChecked="{Binding PcsEnabled}" Margin="0,0,18,0"/>
+       <CheckBox Content="PCS 回退" ToolTip="启用后始终使用PCS参数参与强度计算，与其他已启用来源取最大值" IsChecked="{Binding PcsEnabled}" Margin="0,0,18,0"/>
        <CheckBox Content="LMS 回退" ToolTip="Plug 深度为 0 时，使用 lms/contact/proximity。" IsChecked="{Binding LmsEnabled}" Margin="0,0,18,0"/>
        <CheckBox Content="参数 / 地图事件" IsChecked="{Binding ExtraEnabled}" Margin="0"/>
       </WrapPanel>

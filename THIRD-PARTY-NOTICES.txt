@@ -49,3 +49,13 @@ Microsoft Windows App SDK and .NET runtime distributions include their own
 licenses/notices in the published directory. Their terms are not replaced by
 Neko-VRC's license. Existing backend dependency notices and project credits
 remain applicable.
+
+Installer tooling and Simplified Chinese translation
+---------------------------------------------------
+The installer uses Inno Setup (https://jrsoftware.org/), copyright 1997-2026
+Jordan Russell, portions copyright 2000-2026 Martijn Laan. Original compiler
+notices remain in the installer's About box. The unmodified user-contributed
+Simplified Chinese translation is from jrsoftware/issrc tag is-6_7_3,
+Files/Languages/Unofficial/ChineseSimplified.isl, maintained by Zhenghan Yang
+(Kira); its original attribution is retained in installer/Languages. Inno
+Setup's license is included as installer/Languages/Inno-Setup-License.txt.

@@ -160,6 +160,37 @@ class BackendTests(unittest.TestCase):
             self.api.save(changed, self.api.basic)
         register.assert_called_once_with(self.api.manager.config_dir, True, executable='C:/Neko-VRC.exe')
 
+    def test_failed_steamvr_enable_leaves_last_persisted_setting_off(self):
+        previous = copy.deepcopy(self.api.settings)
+        changed = copy.deepcopy(previous)
+        changed['general']['steamvr_auto_start'] = True
+        with patch('srv.desktop_backend.configure_steamvr_autostart', side_effect=RuntimeError('SteamVR unavailable')), patch.object(self.api.controller, 'apply_settings') as apply:
+            with self.assertRaises(RuntimeError):
+                self.api.save(changed, self.api.basic)
+            self.assertEqual(apply.call_count, 2)
+        self.assertEqual(self.api.settings, previous)
+        self.assertFalse(self.api.manager.load()[0]['general']['steamvr_auto_start'])
+
+    def test_unconfirmed_steamvr_registration_is_not_saved_as_enabled(self):
+        from srv.steamvr_autostart import SteamVRAutoStartResult, SteamVRAutoStartError
+        changed = copy.deepcopy(self.api.settings)
+        changed['general']['steamvr_auto_start'] = True
+        pending = SteamVRAutoStartResult(True, True, '请重启 SteamVR 后重试。')
+        with patch('srv.desktop_backend.configure_steamvr_autostart', return_value=pending):
+            with self.assertRaises(SteamVRAutoStartError):
+                self.api.save(changed, self.api.basic)
+        self.assertFalse(self.api.settings['general']['steamvr_auto_start'])
+        self.assertFalse(self.api.manager.load()[0]['general']['steamvr_auto_start'])
+
+    def test_disk_failure_after_steamvr_enable_compensates_external_setting(self):
+        changed = copy.deepcopy(self.api.settings)
+        changed['general']['steamvr_auto_start'] = True
+        with patch('srv.desktop_backend.configure_steamvr_autostart') as register, patch.object(self.api.manager, 'save', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                self.api.save(changed, self.api.basic)
+            self.assertEqual([call.args[1] for call in register.call_args_list], [True, False])
+        self.assertFalse(self.api.settings['general']['steamvr_auto_start'])
+
     def test_qr_matrix_does_not_depend_on_pillow(self):
         response = self.api.dispatch('qr')
         self.assertGreater(len(response['matrix']), 20)

@@ -553,7 +553,7 @@ class DesktopApplication:
             x + 350, y + 24, 207, panel=panel,
         )
         self._populate_zone_combo(device_kind, channel, SPS_PLUG)
-        self._check(f'pcs_enabled_{device_kind}_{lower}', '监听 PCS（无有效参数时切换）',
+        self._check(f'pcs_enabled_{device_kind}_{lower}', '监听 PCS（始终参与计算）',
                     switches['pcs_enabled'], x + 18, y + 62, 270, panel=panel)
         self._check(f'lms_enabled_{device_kind}_{lower}', '监听 LMS（无吸附时切换）',
                     switches['lms_enabled'], x + 300, y + 62, 257, panel=panel)

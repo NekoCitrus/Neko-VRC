@@ -6,7 +6,7 @@
 
 > This document is translated by AI.
 
-Current version: **v2.0.0**. WinUI 3 is now the default source frontend, retaining direct Bluetooth connections, four independent channel triggers, OSCQuery reading and fallback hints, and compact multi-device chatbox output. The screenshots above show the older frontend.
+Current version: **v2.0.1**. Installer and portable builds include WinUI 3, isolated waveform libraries, direct Bluetooth, four independent channel triggers and OSCQuery reading. The screenshots above show the older frontend.
 
 A small tool that reads SPS/OGB penetration depth from VRChat OSC and controls either a Coyote DG-LAB 3.0 or an Opossum vibration controller.
 
@@ -32,7 +32,7 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 - **Runtime Debug:** only calculated and device-reported strengths for Coyote/Opossum channels. Unchanged values are not repeated, and new entries automatically scroll to the bottom. Missing device feedback is labeled explicitly. Connection and battery status remain on device settings pages.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
-**General → Manage waveforms** opens a subpage with isolated Coyote and Opossum libraries. Multi-select and drag items between the library and channel dropdown list; reorder the right-hand list by dragging. Edits save immediately without reconnecting. Selecting an item previews its amplitude envelope without driving hardware. Import ZIP archives, folders, or one/multiple `.pulse` files; duplicate content is skipped and reported. Switch a channel away from a waveform before removing it from the list.
+The right-chevron **General → Waveform library** card opens a subpage with isolated Coyote and Opossum libraries. Click the parent title to return; there is no separate back button. Multi-select and drag items between the library and channel dropdown list; reorder the right-hand list by dragging. Edits save immediately without reconnecting. Selecting an item plays a scrolling amplitude histogram from exact 25 ms samples, with an independent preview pause control; it never drives hardware. Import ZIP archives, folders, or one/multiple `.pulse` files; duplicate content is skipped and reported. Switch a channel away from a waveform before removing it from the list.
 
 The sample archive contains Coyote App waveforms, not Opossum waveforms. Opossum import currently accepts only explicitly device-tagged frame exchange files, not unverified official App export formats. See [waveform formats and limitations](doc/waveform-library.md). User waveforms are stored in `%APPDATA%\Neko-VRC\waveforms\library.json` and are excluded from releases.
 
@@ -44,13 +44,13 @@ All editable settings apply/save automatically. Invalid text keeps the last vali
 
 Each device kind has exactly one selected output route. App/Bluetooth mixed operation is supported; direct mode connects one host per kind. Saving channel settings preserves connections; changing route or address clears the old output and requires a new manual Bluetooth connection. Pause stops output and is latched until Resume. A lost radio link cannot guarantee delivery of a zero command; use the host's physical stop controls.
 
-The window defaults to 940 × 640, with a DPI-scaled minimum of 880 × 640. Only Pause/Resume remain in the top toolbar, after status, parameter hint and Avatar name. There is no Save button. QR and connection actions stay in their original cards. Compact layout, native page transitions and navigation indicator animations are retained. Exiting hides the window immediately while valid settings flush and backend cleanup completes; close-to-tray behavior is preserved.
+The window defaults to 940 × 640, with a DPI-scaled minimum of 880 × 640. One pause/play icon button matches the waveform preview controls and follows confirmed backend state; pause remains available during slow operations. It appears after status, parameter hint and Avatar name. There is no Save button. QR and connection actions stay in their original cards. Compact layout, native page transitions and navigation indicator animations are retained. Exiting hides the window immediately while valid settings flush and backend cleanup completes; close-to-tray behavior is preserved.
 
 ### Start with SteamVR
 
 The **Start with SteamVR** checkbox uses an OpenVR application manifest. Start SteamVR before changing the option; it applies automatically. The manifest is stored under `%APPDATA%\Neko-VRC\steamvr\`.
 
-This feature does not use Windows login startup and does not launch or poll for SteamVR. SteamVR may require one restart when it first reads the new manifest; the UI reports this and completes setup on the next launch.
+This feature does not use Windows login startup and does not launch or poll for SteamVR. Failed changes restore the last successfully saved toggle state without automatic retries. A newly registered manifest may require a SteamVR restart; the toggle remains off until activation is confirmed, and you can enable it again after restarting SteamVR.
 
 ## Configuration location
 
@@ -78,7 +78,9 @@ Build on Windows with .NET 10 SDK, Windows SDK 10.0.26100.0 and Python dependenc
 powershell -ExecutionPolicy Bypass -File build-winui.ps1
 ```
 
-Distribute the complete portable x64 directory `products/v2.0.0/Neko-VRC-WinUI-win-x64/`, or its `products/v2.0.0/Neko-VRC-WinUI-v2.0.0-win-x64.zip` archive. Final products are versioned under `products/`; backend intermediates remain under `build/`. Existing `dist/` files are preserved, but standard builds no longer write there. Copying only the frontend EXE is not supported.
+Recommended: run `Neko-VRC-Setup-v2.0.1-win-x64.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\Neko-VRC` without administrator access, with a Start menu entry and an optional desktop shortcut. Alternatively distribute the complete portable x64 directory `products/v2.0.1/Neko-VRC-WinUI-win-x64/`, or its `products/v2.0.1/Neko-VRC-WinUI-v2.0.1-win-x64.zip` archive. Final products are versioned under `products/`; backend intermediates remain under `build/`. Copying only the frontend EXE is not supported.
+
+Build installers with [Inno Setup 6.7.3+](https://jrsoftware.org/isdl.php) and `powershell -ExecutionPolicy Bypass -File build-installer.ps1`. Use `-ISCC` for an explicit compiler path or `-SkipAppBuild` to reuse the current version. The script produces the setup EXE and `SHA256SUMS.txt` and tests installation, payload integrity, upgrade, installed UI and uninstall. Validation refuses to overwrite an existing installation. Setup never forcibly closes devices or applications. Configurations and waveform libraries in `%APPDATA%\Neko-VRC`, and runtime logs, are preserved on upgrade/uninstall. Disable SteamVR auto-launch before uninstalling. Binaries are not code-signed; Windows may show an unknown-publisher warning.
 
 For source runs, build `desktop/NekoVRC.WinUI/NekoVRC.WinUI.csproj` with `-p:Platform=x64`, then launch `neko_vrc.py`. Native NavigationView, TitleBar and Toolkit settings cards follow the composition of [WSL Settings](https://github.com/microsoft/WSL/tree/master/src/windows/wslsettings) and [WinUI Gallery](https://github.com/microsoft/WinUI-Gallery). Navigation and content share a background, caption buttons are OS-rendered, and custom parameters are collapsed by default. See [third-party notices](THIRD-PARTY-NOTICES.txt).
 
@@ -93,7 +95,7 @@ Each device channel has five independent source checkboxes. Only checked sources
 - **SPS Socket penetration:** estimates depth from the selected `OGB/Orf/<zone>` Root/Tip values using the OGB algorithm.
 - **SPS Plug penetration:** reads `PenSelf/PenOthers` from the selected `OGB/Pen/<zone>`.
 - **Extra parameters:** maps values through the legacy distance formula (default range `0..1`) and expires them after 0.5 seconds without an update.
-- **PCS:** uses `/avatar/parameters/pcs/contact/proximity` as a distance fallback when valid Socket depth parameters are unavailable.
+- **PCS:** always maps `/avatar/parameters/pcs/contact/proximity` through distance when enabled, competing with other enabled sources for the maximum.
 - **LMS:** uses `/avatar/parameters/lms/contact/proximity` as a distance fallback when the selected Plug depth is zero.
 
 Socket, Plug, and extra parameters/map events default to enabled for all channels. PCS defaults to enabled for Coyote A/B and disabled for Opossum A/B; LMS defaults to disabled for Coyote A/B and enabled for Opossum A/B.
@@ -102,7 +104,7 @@ The maximum current value wins and linearly scales that device channel's wavefor
 
 Socket and Plug can each target one named zone or **any currently active** zone. The application discovers VRChat's OSCQuery service and queries `/avatar` for the current Avatar and SPS parameter tree; `/avatar/change` only requests an immediate refresh.
 
-Availability checks use readable numeric parameters. Zone lists/counts include only complete same-zone, same-owner Root/Tip pairs or direct depth signals, excluding Touch/Frot, incomplete pairs and unreadable nodes. PCS is suppressed only after valid Socket depth values have actually been read (zero is valid), not by declarations alone. Fresh OSCQuery values supplement live OSC, expire after 0.5 seconds, and cannot restore output while paused.
+Availability checks use readable numeric parameters. Zone lists/counts include only complete same-zone, same-owner Root/Tip pairs or direct depth signals, excluding Touch/Frot, incomplete pairs and unreadable nodes. Socket depth availability does not suppress enabled PCS input. Fresh OSCQuery values supplement live OSC, expire after 0.5 seconds, and cannot restore output while paused.
 
 Waiting and availability hints appear once after the top service status, not under every channel. Missing depth suggests the available corresponding PCS/LMS fallback; if neither depth nor fallback exists, it reports no usable Socket/Plug parameters. Hints never change checkboxes automatically. Hover the question marks after PCS, LMS and parameter/map events for help.
 
@@ -112,7 +114,7 @@ Your own Socket and Plug interactions are included automatically: the maximum of
 
 When LMS is checked, all selected Plug depths (`PenSelf/PenOthers`) must be zero for LMS to contribute. Its value is mapped through the channel's distance range (default `0..1`). Any positive Plug depth blocks LMS. Coyote can also enable LMS manually.
 
-When PCS is checked, it contributes only when no valid Socket depth parameters match the selected zone. Valid numeric parameters are a same-zone, same-owner Root/Tip pair or a legacy `PenSelf/PenOthers` depth. Zero depth does not enable PCS. Availability is determined from the live OSCQuery inventory and received Socket signals and is rechecked after avatar, parameter, or zone changes.
+When PCS is checked, it always contributes through the channel's distance range, regardless of Socket depth availability or zone selection. The maximum across enabled sources wins. Unchecking PCS removes its contribution.
 
 PCS and LMS have independent checkboxes and expire after 0.5 seconds without updates. Disabling Socket or Plug preserves observations needed for fallback guards. Input changes invalidate only affected sources; cap/waveform changes preserve depth without reconnecting the APP.
 
@@ -217,7 +219,7 @@ python -m unittest discover -v
 powershell -ExecutionPolicy Bypass -File build-winui.ps1
 ```
 
-The script builds a self-contained WinUI 3 frontend and a console-free Python backend, producing `products\v2.0.0\Neko-VRC-WinUI-v2.0.0-win-x64.zip`. Isolated integration checks cover pages, bindings and both exit routes. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration is stored under `%APPDATA%\Neko-VRC\`, not in the release directory. WPF fallback builds also use `products\v2.0.0\`, with `WPF` in the artifact names.
+The script builds a self-contained WinUI 3 frontend and a console-free Python backend, producing `products\v2.0.1\Neko-VRC-WinUI-v2.0.1-win-x64.zip`. Isolated integration checks cover pages, bindings and both exit routes. Extract the whole directory and run `Neko-VRC.exe`, keeping its `backend` subdirectory. Configuration is stored under `%APPDATA%\Neko-VRC\`, not in the release directory. WPF fallback builds also use `products\v2.0.1\`, with `WPF` in the artifact names.
 
 ## FAQ
 

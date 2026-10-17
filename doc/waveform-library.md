@@ -2,10 +2,11 @@
 
 ## 使用
 
-WinUI 3 主页点击“管理波形”。左侧是未加入选择框的内置 / 导入波形，右侧为该设备 A/B 通道共用的可选列表。郊狼与负鼠两套列表完全隔离，不共享格式或排序。
+WinUI 3 主页点击“波形库”卡片（右侧箭头）。子页面标题为“基本设置 > 波形库”，直接点击“基本设置”返回，不再显示单独的返回键。左侧是未加入选择框的内置 / 导入波形，右侧为该设备 A/B 通道共用的可选列表。郊狼与负鼠两套列表完全隔离，不共享格式或排序。
 
 - Ctrl / Shift 多选，可跨列表拖动，或使用中间箭头；右侧使用原生 ListView 拖动排序。
-- 选择任一条目预览幅值包络与持续时间，预览不会发送任何设备指令。长波形使用保峰值的分桶显示，不是全部采样点。
+- 选择条目后，使用原始 25 ms 样本循环滚动最近 2 秒的联合示意图：郊狼柱高表示幅值，柱间距表示周期（越密频率越高），右端为当前时刻。预览区只显示波形名称、图形与播放 / 暂停图标，不显示坐标说明、数值、时长、图例或提示文字。逐样本积分频率，保持跨样本及循环边界的相位连续；最多约 201 柱，不预生成整个长波形的脉冲。切页停止动画，隐藏窗口暂停绘制。仅示意幅值与频率关系，并非真实电流形状，不发送设备指令、不跟随硬件输出。
+- 官方周期字节先解压为 ms，再计算 Hz。官方“脉冲 / 压缩”幅值都是 100%，但疏密随频率变化；“树荫”是恒定 100% 幅值、10 Hz，不人为编造起伏。负鼠只有 25 ms 幅值柱，不把固定占位字节当作电刺激频率。
 - 编辑立即保存；自定义波形切换沿用现有热更新，不断开 App / BLE，不清空当前深度。正在使用的波形不能移出，至少保留一项。
 - 导入只加入波形库，不自动启用、不修改强度上限、不触发设备。
 - ZIP 不解压到磁盘，仅读取其中 `.pulse`；文件夹递归读取。按设备和实际帧内容去重（文件名不同也会去重），同名不同内容会自动添加编号。格式错误单独跳过，提示导入 / 重复 / 无效数量，悬停提示可查看前八条失败原因。
@@ -34,7 +35,7 @@ WinUI 3 主页点击“管理波形”。左侧是未加入选择框的内置 / 
 
 ## 实现依据
 
-验证：258 项 Python 自动测试通过；WinUI 构建无编译警告，源程序及完整发布包的双主题、最小尺寸、列表移动、导入去重、热应用和退出测试通过，并检查了实际渲染截图。列表排序使用原生 ListView；未用实体鼠标验证所有拖动手势，未连接主机测试新波形的实际体感。官方负鼠 App 导出格式仍需提供样例后核对。
+验证：266 项 Python 自动测试通过，包含四通道 PCS 与有效插座深度取最大值、关闭 / 过期和真实 UDP 路由；WinUI 构建无编译警告。界面回归包含根页 / 子页真实标题位置与基线（不容许一像素偏移）、原生箭头、PCS/LMS 与帮助图标的行列对齐、三种恒幅波形的联合图、100 Hz / 1 Hz 疏密与幅值、相位跨界 / 变化、SteamVR 保存失败后的开关回退、双主题、最小尺寸、预览暂停与切页清理、列表移动、导入去重、热应用和退出，并检查实际渲染截图。列表排序使用原生 ListView；未用实体鼠标验证所有拖动手势，未连接主机测试新波形的实际体感。官方负鼠 App 导出格式仍需提供样例后核对。
 
 独立解析实现参考公开格式事实与官方协议，未复制第三方解析器代码：
 
@@ -42,3 +43,5 @@ WinUI 3 主页点击“管理波形”。左侧是未加入选择框的内置 / 
 - [V3 时长映射对照](https://github.com/hyperzlib/DG-Lab-Coyote-Game-Hub/blob/adaf01193a7e1e0e865e0ec18371ade6edf49cc1/frontend/src/lib/dg-pulse-helper/DGLabPulseFileHelper.ts)
 - [官方郊狼 3.0 协议](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/tree/main/coyote/v3)
 - [官方负鼠协议](https://github.com/dungeonlab-open/dglab-bluetooth-protocol/tree/main/opossum-vibrate-controller)
+- [官方波形原始帧（含树荫、脉冲、压缩）](https://github.com/dungeonlab-open/dglab-kit/blob/e1707e6e7ef50bdbe8c8dafe19f34289e01dffc0/src/waveform/coyote.ts)
+- [WinUI 原生面包屑模板](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/Breadcrumb/BreadcrumbBar.xaml) 与[官方主题资源](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/Breadcrumb/BreadcrumbBar_themeresources.xaml)：根页和子页共用模板、官方字号 / 字重 / 箭头资源，统一当前项与父项模板的高度和内边距，避免嵌套 Button 在分数 DPI 下逐层取整导致像素偏移。不自绘 `>`。

@@ -42,20 +42,19 @@
          <CheckBox Grid.Row="1" Content="插头深度" MinWidth="0" IsChecked="{Binding PlugEnabled, Mode=TwoWay}" VerticalAlignment="Center"/>
          <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding PlugZones}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding PlugZone, Mode=TwoWay}" HorizontalAlignment="Stretch" AutomationProperties.Name="插头部位"/>
         </Grid>
-        <StackPanel x:Name="FallbackChoices" Grid.Column="1" Spacing="6" VerticalAlignment="Top">
-         <StackPanel Orientation="Horizontal" Spacing="4">
-          <CheckBox Content="PCS 回退" MinWidth="0" IsChecked="{Binding PcsEnabled, Mode=TwoWay}"/>
-          <Button Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="PCS 回退帮助" ToolTipService.ToolTip="当没有可计算深度的插座时使用PCS参数计算强度"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
-         </StackPanel>
-         <StackPanel Orientation="Horizontal" Spacing="4">
-          <CheckBox Content="LMS 回退" MinWidth="0" IsChecked="{Binding LmsEnabled, Mode=TwoWay}"/>
-          <Button Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="LMS 回退帮助" ToolTipService.ToolTip="当没有可计算深度的插头时或者未处于吸附状态时使用LMS参数计算强度"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
-         </StackPanel>
-        </StackPanel>
-        <StackPanel x:Name="ExtraChoice" Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top">
-         <CheckBox Content="参数 / 地图事件" MinWidth="0" IsChecked="{Binding ExtraEnabled, Mode=TwoWay}"/>
-         <Button Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="参数地图事件帮助" ToolTipService.ToolTip="使用自定义参数和cheese郊狼地图事件触发"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
-        </StackPanel>
+        <Grid x:Name="FallbackChoices" Grid.Column="1" ColumnSpacing="4" RowSpacing="6" VerticalAlignment="Top">
+         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="16"/></Grid.ColumnDefinitions>
+         <Grid.RowDefinitions><RowDefinition Height="32"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+         <CheckBox Content="PCS 回退" MinWidth="0" Height="32" MinHeight="0" VerticalAlignment="Center" IsChecked="{Binding PcsEnabled, Mode=TwoWay}"/>
+         <Button Grid.Column="1" Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="PCS 回退帮助" ToolTipService.ToolTip="启用后始终使用PCS参数参与强度计算，与其他已启用来源取最大值"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
+         <CheckBox Grid.Row="1" Content="LMS 回退" MinWidth="0" Height="32" MinHeight="0" VerticalAlignment="Center" IsChecked="{Binding LmsEnabled, Mode=TwoWay}"/>
+         <Button Grid.Row="1" Grid.Column="1" Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="LMS 回退帮助" ToolTipService.ToolTip="当没有可计算深度的插头时或者未处于吸附状态时使用LMS参数计算强度"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
+        </Grid>
+        <Grid x:Name="ExtraChoice" Grid.Column="2" ColumnSpacing="4" Height="32" VerticalAlignment="Top">
+         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="16"/></Grid.ColumnDefinitions>
+         <CheckBox Content="参数 / 地图事件" MinWidth="0" Height="32" MinHeight="0" VerticalAlignment="Center" IsChecked="{Binding ExtraEnabled, Mode=TwoWay}"/>
+         <Button Grid.Column="1" Width="16" Height="24" MinWidth="0" MinHeight="0" Padding="0" BorderThickness="0" Background="Transparent" VerticalAlignment="Center" AutomationProperties.Name="参数地图事件帮助" ToolTipService.ToolTip="使用自定义参数和cheese郊狼地图事件触发"><FontIcon Glyph="&#xE897;" FontSize="14"/></Button>
+        </Grid>
        </Grid>
        <Grid ColumnSpacing="8">
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="130"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/></Grid.ColumnDefinitions>

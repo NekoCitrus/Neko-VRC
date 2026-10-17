@@ -195,7 +195,12 @@ class WaveformLibrary:
             bucket = samples[index:index+step]
             low, high = min(bucket), max(bucket)
             points.extend([low, high])
-        return {'duration': len(frames) / 10, 'amplitudes': points}
+        # Exact 25 ms samples, compact enough even for the maximum-length wave.
+        # Keep the bounded overview for older clients; animation must not play
+        # the artificial min/max buckets as if they were real samples.
+        return {'duration': len(frames) / 10, 'amplitudes': points,
+                'sample_hex': bytes(samples).hex(), 'sample_interval_ms': 25,
+                'frequency_hex': ''.join(frame[:8] for frame in frames) if kind == 'coyote' else None}
 
     def import_paths(self, kind, paths):
         if kind not in KINDS or not isinstance(paths, list) or not 1 <= len(paths) <= MAX_FILES:

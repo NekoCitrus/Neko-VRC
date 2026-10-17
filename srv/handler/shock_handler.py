@@ -351,7 +351,8 @@ class ShockHandler(BaseHandler):
             depth, expiry, raw_value = self.lms_value
             if expiry > now:
                 candidates.append((depth, SOURCE_LMS, '', LMS_PROXIMITY_ADDRESS, raw_value))
-        if self.pcs_enabled and not self.socket_depth_available and self.pcs_value is not None:
+        # PCS is an independent distance input, not gated by socket availability.
+        if self.pcs_enabled and self.pcs_value is not None:
             depth, expiry, raw_value = self.pcs_value
             if expiry > now:
                 candidates.append((depth, SOURCE_PCS, '', PCS_PROXIMITY_ADDRESS, raw_value))

@@ -5,7 +5,7 @@
  <Window.SystemBackdrop><MicaBackdrop/></Window.SystemBackdrop>
  <Grid x:Name="Root" Loaded="RootLoaded" ActualThemeChanged="ThemeChanged">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-  <TitleBar x:Name="AppTitleBar" Title="Neko-VRC" IsBackButtonVisible="False" BackRequested="BackRequested" IsPaneToggleButtonVisible="True" PaneToggleRequested="PaneToggleRequested">
+  <TitleBar x:Name="AppTitleBar" Title="Neko-VRC" IsBackButtonVisible="False" IsPaneToggleButtonVisible="True" PaneToggleRequested="PaneToggleRequested">
    <TitleBar.IconSource><ImageIconSource ImageSource="ms-appx:///Assets/neko-vrc.ico"/></TitleBar.IconSource>
   </TitleBar>
   <NavigationView x:Name="Navigation" Grid.Row="1" IsSettingsVisible="False" IsBackButtonVisible="Collapsed" IsPaneToggleButtonVisible="False"
@@ -33,18 +33,40 @@
     <NavigationViewItem Content="运行调试" Tag="debug"><NavigationViewItem.Icon><FontIcon Glyph="&#xE9D9;"/></NavigationViewItem.Icon></NavigationViewItem>
    </NavigationView.MenuItems>
    <NavigationView.FooterMenuItems><NavigationViewItem x:Name="AboutNavigationItem" Content="关于与版权" Tag="about" Icon="Help"/></NavigationView.FooterMenuItems>
-   <Grid x:Name="LayoutArea" Margin="16,8,16,0" RowSpacing="8">
+   <Grid x:Name="LayoutArea" Margin="16,8,16,0" RowSpacing="4">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
     <StackPanel x:Name="HeaderPanel" Spacing="6">
-     <Grid x:Name="HeaderBar" Height="36" ColumnSpacing="16">
+     <Grid x:Name="HeaderBar" Height="40" ColumnSpacing="16">
       <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <TextBlock x:Name="PageTitle" Text="基本设置" Style="{StaticResource TitleTextBlockStyle}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+      <Grid VerticalAlignment="Center">
+       <!-- Typography reference for the test harness; every visible heading
+            uses the SAME native breadcrumb template, including root pages. -->
+       <TextBlock x:Name="PageTitle" Text="基本设置" Visibility="Collapsed" Style="{StaticResource TitleTextBlockStyle}"/>
+       <BreadcrumbBar x:Name="HeaderBreadcrumb" VerticalAlignment="Center" ItemClicked="BreadcrumbClicked" LayoutUpdated="BreadcrumbLayoutUpdated" AutomationProperties.Name="页面路径">
+        <!-- Official BreadcrumbBar resource keys; no custom text template or
+             hand-drawn '>' glyph. Padding/foreground/focus remain native. -->
+        <BreadcrumbBar.Resources>
+         <ResourceDictionary>
+         <ResourceDictionary.ThemeDictionaries>
+          <ResourceDictionary x:Key="Light"><StaticResource x:Key="BreadcrumbBarForegroundBrush" ResourceKey="TextFillColorSecondaryBrush"/></ResourceDictionary>
+          <ResourceDictionary x:Key="Dark"><StaticResource x:Key="BreadcrumbBarForegroundBrush" ResourceKey="TextFillColorSecondaryBrush"/></ResourceDictionary>
+          <ResourceDictionary x:Key="HighContrast"><StaticResource x:Key="BreadcrumbBarForegroundBrush" ResourceKey="SystemColorButtonTextColorBrush"/></ResourceDictionary>
+         </ResourceDictionary.ThemeDictionaries>
+         <x:Double x:Key="BreadcrumbBarItemThemeFontSize">28</x:Double>
+         <FontWeight x:Key="BreadcrumbBarItemFontWeight">SemiBold</FontWeight>
+         <x:Double x:Key="BreadcrumbBarChevronFontSize">20</x:Double>
+         <Thickness x:Key="BreadcrumbBarChevronPadding">12,0</Thickness>
+         </ResourceDictionary>
+        </BreadcrumbBar.Resources>
+       </BreadcrumbBar>
+      </Grid>
       <Grid x:Name="HeaderActions" Grid.Column="1" ColumnSpacing="12" VerticalAlignment="Center">
        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
        <TextBlock x:Name="ServiceStatus" Text="{Binding StatusLine}" HorizontalAlignment="Right" VerticalAlignment="Center" TextAlignment="Right" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding StatusLine}"/>
        <StackPanel x:Name="GlobalActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-        <Button x:Name="PauseButton" Content="暂停" Command="{Binding StopCommand}"/>
-        <Button Content="恢复" Command="{Binding ResumeCommand}"/>
+        <ToggleButton x:Name="PauseButton" IsChecked="{Binding ServicePlaybackActive, Mode=OneWay}" Command="{Binding PauseResumeCommand}" Width="28" Height="24" MinWidth="0" MinHeight="0" Padding="0" AutomationProperties.Name="{Binding PauseResumeLabel}">
+         <FontIcon x:Name="ServicePlaybackIcon" Glyph="{Binding PauseResumeGlyph}" FontSize="12"/>
+        </ToggleButton>
        </StackPanel>
       </Grid>
      </Grid>

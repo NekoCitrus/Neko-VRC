@@ -18,7 +18,7 @@ from loguru import logger
 
 import shocking_vrchat as core
 from srv.config_manager import validate_config
-from srv.steamvr_autostart import configure_steamvr_autostart
+from srv.steamvr_autostart import configure_steamvr_autostart, SteamVRAutoStartError
 
 
 class BackendAPI:
@@ -85,15 +85,27 @@ class BackendAPI:
         # Failed persistence rolls live settings back and clears old triggers.
         previous_settings, previous_basic = self.settings, self.basic
         self.controller.apply_settings(settings, basic)
+        steamvr_applied = False
         try:
             if settings['general']['steamvr_auto_start'] != previous_settings['general']['steamvr_auto_start']:
-                configure_steamvr_autostart(
+                result = configure_steamvr_autostart(
                     self.manager.config_dir, settings['general']['steamvr_auto_start'],
                     executable=self.launch_executable,
                 )
+                if getattr(result, 'pending_restart', False) is True:
+                    raise SteamVRAutoStartError('清单已注册，但 SteamVR 尚未确认；请重启 SteamVR 后重新开启此选项。')
+                steamvr_applied = True
             self.manager.save(settings, basic)
         except Exception:
             self.controller.apply_settings(previous_settings, previous_basic)
+            if steamvr_applied:
+                try:
+                    configure_steamvr_autostart(
+                        self.manager.config_dir, previous_settings['general']['steamvr_auto_start'],
+                        executable=self.launch_executable,
+                    )
+                except Exception as rollback_error:
+                    logger.warning('SteamVR 自动启动回退未确认：{}', rollback_error)
             raise
         self.settings, self.basic = copy.deepcopy(settings), copy.deepcopy(basic)
         from srv.diagnostics import record_latency

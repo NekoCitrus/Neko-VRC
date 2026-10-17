@@ -13,7 +13,7 @@ public partial class App : Application
     private Mutex? _mutex;
     public static MainWindow? CurrentWindow { get; private set; }
     public static string[] Arguments { get; } = Environment.GetCommandLineArgs().Skip(1).ToArray();
-    public static string? TestDirectory => Arguments.Length == 2 && Arguments[0] is "--smoke-test" or "--smoke-test-close" or "--preview-ui" ? Path.GetFullPath(Arguments[1]) : null;
+    public static string? TestDirectory => Arguments.Length == 2 && Arguments[0] is "--smoke-test" or "--smoke-test-close" or "--smoke-waveforms" or "--preview-ui" ? Path.GetFullPath(Arguments[1]) : null;
     public App()
     {
         InitializeComponent();

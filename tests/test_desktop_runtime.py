@@ -1163,7 +1163,7 @@ class ServiceControllerTests(unittest.TestCase):
                 client._sock.close()
             runtime.stop()
 
-    def test_real_udp_pcs_follows_live_socket_inventory_per_channel(self):
+    def test_real_udp_pcs_competes_with_live_socket_per_channel(self):
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
         for kind in ('coyote', 'opossum'):
             basic['dglab3'][kind]['channel_a']['socket_zone'] = 'One'
@@ -1217,14 +1217,16 @@ class ServiceControllerTests(unittest.TestCase):
             apply_inventory()
             assert_depths(0, 0)  # Fresh zero-valued Root/Tip are valid evidence.
             client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
-            assert_depths(0, 0.9)  # A has actual zero depth; B's selected zone is missing.
+            assert_depths(0.9, 0.9)  # A's valid socket must not suppress PCS.
             for _ in range(4):
                 client.send_message(base + 'PenSelfNewRoot', 0.2)
                 client.send_message(base + 'PenSelfNewTip', 0.6)
             client.send_message(base + 'PenSelfNewRoot', 0.8)
             client.send_message(base + 'PenSelfNewTip', 1)
             client.send_message(PCS_PROXIMITY_ADDRESS, 0.9)
-            assert_depths(0.5, 0.9)
+            assert_depths(0.9, 0.9)
+            client.send_message(PCS_PROXIMITY_ADDRESS, 0.2)
+            assert_depths(0.5, 0.2)  # Socket wins only where its depth is higher.
             document['CONTENTS']['parameters']['CONTENTS'].clear()
             apply_inventory()
             assert_depths(0, 0)

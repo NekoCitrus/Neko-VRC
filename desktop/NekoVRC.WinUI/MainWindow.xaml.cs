@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        HeaderBreadcrumb.ItemsSource = new[] { "基本设置" };
         ViewModel = new(_client); Root.DataContext = ViewModel;
         ViewModel.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(MainViewModel.Theme)) ApplyTheme(); };
         ApplyTheme();
@@ -77,6 +78,27 @@ public sealed partial class MainWindow : Window
             catch (Exception exc) { _timer.Stop(); ReportFailure(exc); }
             finally { _polling = false; }
         };
+    }
+
+    private void BreadcrumbLayoutUpdated(object? sender, object e)
+    {
+        // Stock WinUI uses a nested Button for ancestors but a single presenter
+        // for the current item. Their 1/3 DIP insets round at different nesting
+        // levels (notably 125% DPI). Keep the native template/glyph/focus states,
+        // but give both paths the same unpadded, fixed-height text box.
+        foreach (var item in Descendants(HeaderBreadcrumb).OfType<BreadcrumbBarItem>()) {
+            if (item.Height != 40) item.Height = 40;
+            foreach (var part in Descendants(item).OfType<FrameworkElement>()) {
+                if (part is Button button && part.Name == "PART_ItemButton") {
+                    if (button.Padding != new Thickness(0)) button.Padding = new Thickness(0);
+                    if (button.Height != 40) button.Height = 40;
+                }
+                if (part is ContentPresenter presenter && part.Name == "PART_LastItemContentPresenter") {
+                    if (presenter.Padding != new Thickness(0)) presenter.Padding = new Thickness(0);
+                    if (presenter.Height != 40) presenter.Height = 40;
+                }
+            }
+        }
     }
 
     private async void RootLoaded(object sender, RoutedEventArgs e)
@@ -127,14 +149,18 @@ public sealed partial class MainWindow : Window
         Navigation.SelectedItem = Navigation.MenuItems[0];
         ViewModel.SelectPage("waveforms");
         PageTitle.Text = "波形库";
-        AppTitleBar.IsBackButtonVisible = true;
+        PageTitle.Visibility = Visibility.Collapsed;
+        HeaderBreadcrumb.ItemsSource = new[] { "基本设置", "波形库" };
+        HeaderBreadcrumb.Visibility = Visibility.Visible;
         ContentFrame.Navigate(typeof(WaveformsPage), ViewModel, new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight });
     }
-    private void BackRequested(TitleBar sender, object args)
+    private void BreadcrumbClicked(BreadcrumbBar sender, BreadcrumbBarItemClickedEventArgs args) => NavigateBreadcrumb(args.Index);
+    private void NavigateBreadcrumb(int index)
     {
+        if (index != 0 || ContentFrame.Content is not WaveformsPage) return;
         ViewModel.SelectPage("general");
         PageTitle.Text = "基本设置";
-        AppTitleBar.IsBackButtonVisible = false;
+        HeaderBreadcrumb.ItemsSource = new[] { "基本设置" };
         ContentFrame.Navigate(typeof(GeneralPage), ViewModel, new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromLeft });
         ContentFrame.BackStack.Clear();
     }
@@ -161,8 +187,8 @@ public sealed partial class MainWindow : Window
         // DevicePage captures its DeviceViewModel, so its connection card and
         // channels remain intact while the entire outgoing page animates away.
         ViewModel.SelectPage(tag);
-        AppTitleBar.IsBackButtonVisible = false;
         PageTitle.Text = item.Content?.ToString() ?? "";
+        HeaderBreadcrumb.ItemsSource = new[] { PageTitle.Text };
         Type page = tag switch { "coyote" or "opossum" => typeof(DevicePage), "debug" => typeof(DebugPage), "about" => typeof(AboutPage), _ => typeof(GeneralPage) };
         _lastPageTransition = e.RecommendedNavigationTransitionInfo ?? new EntranceNavigationTransitionInfo();
         ContentFrame.Navigate(page, ViewModel, _lastPageTransition);
@@ -292,12 +318,12 @@ public sealed partial class MainWindow : Window
             if (checks.Length != 5) throw new Exception("Channel trigger checkboxes missing.");
             var columns = Descendants((Page)ContentFrame.Content).OfType<Grid>().Single(g => g.Name == "TriggerColumns" && ReferenceEquals(g.DataContext, channel));
             var depths = columns.Children.OfType<Grid>().Single(g => g.Name == "DepthSelectors");
-            var fallbacks = columns.Children.OfType<StackPanel>().Single(g => g.Name == "FallbackChoices");
-            var extraGroup = columns.Children.OfType<StackPanel>().Single(g => g.Name == "ExtraChoice");
+            var fallbacks = columns.Children.OfType<Grid>().Single(g => g.Name == "FallbackChoices");
+            var extraGroup = columns.Children.OfType<Grid>().Single(g => g.Name == "ExtraChoice");
             var extra = extraGroup.Children.OfType<CheckBox>().Single();
             if (columns.ColumnDefinitions.Count != 3 || Grid.GetColumn(depths) != 0 || Grid.GetColumn(fallbacks) != 1 || Grid.GetColumn(extraGroup) != 2 || Descendants(fallbacks).OfType<CheckBox>().Count() != 2 || extra.Content?.ToString() != "参数 / 地图事件") throw new Exception("Trigger choices must occupy depth/fallback/map columns.");
             var help = Descendants(columns).OfType<Button>().ToArray();
-            if (help.Length != 3 || !help.Select(b => ToolTipService.GetToolTip(b)?.ToString()).SequenceEqual(new[] { "当没有可计算深度的插座时使用PCS参数计算强度", "当没有可计算深度的插头时或者未处于吸附状态时使用LMS参数计算强度", "使用自定义参数和cheese郊狼地图事件触发" })) throw new Exception("Trigger help icons/tooltips are missing.");
+            if (help.Length != 3 || !help.Select(b => ToolTipService.GetToolTip(b)?.ToString()).SequenceEqual(new[] { "启用后始终使用PCS参数参与强度计算，与其他已启用来源取最大值", "当没有可计算深度的插头时或者未处于吸附状态时使用LMS参数计算强度", "使用自定义参数和cheese郊狼地图事件触发" })) throw new Exception("Trigger help icons/tooltips are missing.");
             if (Descendants((Page)ContentFrame.Content).OfType<CommunityToolkit.WinUI.Controls.SettingsCard>().Any(c => ReferenceEquals(c.DataContext, channel) && c.Description != null)) throw new Exception("Channel status hint was not removed.");
             foreach (int row in new[] { 0, 1 }) {
                 var depth = depths.Children.OfType<CheckBox>().Single(c => Grid.GetRow(c) == row);
@@ -305,7 +331,15 @@ public sealed partial class MainWindow : Window
                 var depthOrigin = depth.TransformToVisual(columns).TransformPoint(default);
                 var zoneOrigin = zone.TransformToVisual(columns).TransformPoint(default);
                 if (zone.ActualWidth < 160 || zoneOrigin.X - depthOrigin.X - depth.ActualWidth > 7 || Math.Abs(zoneOrigin.Y + zone.ActualHeight / 2 - depthOrigin.Y - depth.ActualHeight / 2) > 1) throw new Exception("Depth checkbox/zone spacing or row alignment is incorrect.");
+                var fallback = fallbacks.Children.OfType<CheckBox>().Single(c => Grid.GetRow(c) == row);
+                var icon = fallbacks.Children.OfType<Button>().Single(c => Grid.GetRow(c) == row);
+                var checkPoint = fallback.TransformToVisual(columns).TransformPoint(default);
+                var iconPoint = icon.TransformToVisual(columns).TransformPoint(default);
+                double center = zoneOrigin.Y + zone.ActualHeight / 2;
+                if (Math.Abs(checkPoint.Y + fallback.ActualHeight / 2 - center) > .01 || Math.Abs(iconPoint.Y + icon.ActualHeight / 2 - center) > .01) throw new Exception("Fallback/help row centers must match the depth selectors.");
             }
+            var iconPositions = fallbacks.Children.OfType<Button>().Select(b => b.TransformToVisual(columns).TransformPoint(default).X).ToArray();
+            if (Math.Abs(iconPositions[0] - iconPositions[1]) > .01) throw new Exception("PCS/LMS help columns are not aligned.");
             var fallbackOrigin = fallbacks.TransformToVisual(columns).TransformPoint(default);
             var extraOrigin = extraGroup.TransformToVisual(columns).TransformPoint(default);
             if (Math.Abs(fallbackOrigin.X - depths.ActualWidth - 20) > 1 || Math.Abs(extraOrigin.X - fallbackOrigin.X - fallbacks.ActualWidth - 20) > 1) throw new Exception("Trigger column gaps are inconsistent.");
@@ -357,13 +391,13 @@ public sealed partial class MainWindow : Window
             if (commands.Length != 4 || !commands.SequenceEqual(new[] { ViewModel.CurrentDevice!.ScanCommand, ViewModel.CurrentDevice.ConnectCommand, ViewModel.CurrentDevice.DisconnectCommand, ViewModel.CurrentDevice.QrCommand })) throw new Exception("Connection actions are not in the device page.");
         }
         if (tag == "general" && Descendants(page).OfType<Button>().Count(b => Equals(b.Content, "App 扫码连接") && ReferenceEquals(b.Command, ViewModel.QrCommand)) != 1) throw new Exception("General QR action was not restored.");
-        if (Descendants(HeaderActions).OfType<Button>().Count() != 2 || Descendants(HeaderActions).OfType<Button>().Any(b => Equals(b.Content, "退出") || Equals(b.Content, "保存并应用"))) throw new Exception("Header must contain only Pause/Resume.");
+        if (Descendants(HeaderActions).OfType<Microsoft.UI.Xaml.Controls.Primitives.ButtonBase>().Count() != 1 || !ReferenceEquals(PauseButton.Command, ViewModel.PauseResumeCommand)) throw new Exception("Header must contain one combined Pause/Resume button.");
         if (_lastPageTransition == null || _lastPageTransition is SuppressNavigationTransitionInfo) throw new Exception("Page animation was disabled.");
         var actionsOrigin = GlobalActions.TransformToVisual(LayoutArea).TransformPoint(default);
         var statusOrigin = ServiceStatus.TransformToVisual(LayoutArea).TransformPoint(default);
         if (Math.Abs(actionsOrigin.X + GlobalActions.ActualWidth - LayoutArea.ActualWidth) > 1 || Math.Abs(actionsOrigin.Y + GlobalActions.ActualHeight / 2 - HeaderBar.ActualHeight / 2) > 1) throw new Exception("Action buttons are not fixed at the header's right edge.");
         if (Math.Abs(statusOrigin.X + ServiceStatus.ActualWidth + 12 - actionsOrigin.X) > 1 || Math.Abs(statusOrigin.Y + ServiceStatus.ActualHeight / 2 - actionsOrigin.Y - GlobalActions.ActualHeight / 2) > 1 || ServiceStatus.TextAlignment != TextAlignment.Right || ServiceStatus.ActualWidth < 80) throw new Exception($"Service/avatar status is not on the left of the same button row: {tag}, origin={statusOrigin}, size={ServiceStatus.ActualWidth}x{ServiceStatus.ActualHeight}, actions={actionsOrigin}, size={GlobalActions.ActualWidth}x{GlobalActions.ActualHeight}.");
-        if (HeaderBar.ActualHeight > 37 || ContentFrame.Clip is not RectangleGeometry clip || Math.Abs(clip.Rect.Height - ContentFrame.ActualHeight) > 1) throw new Exception("Compact header or transition viewport is incorrect.");
+        if (HeaderBar.ActualHeight > 41 || ContentFrame.Clip is not RectangleGeometry clip || Math.Abs(clip.Rect.Height - ContentFrame.ActualHeight) > 1) throw new Exception("Compact header or transition viewport is incorrect.");
         if (ContentFrame.BackStack.Count != 0 || ContentFrame.ForwardStack.Count != 0) throw new Exception("Menu navigation retained stale pages.");
     }
     private async Task SmokeAsync()
@@ -371,6 +405,11 @@ public sealed partial class MainWindow : Window
         await _client.CallAsync("bluetooth_check");
         ViewModel.PrepareSmokePorts(FreePort(), FreePort(), FreePort(), FreePort(true));
         await ViewModel.SaveAsync(); await ViewModel.DeviceActionAsync("start"); await ViewModel.PollAsync();
+        if (App.Arguments[0] == "--smoke-waveforms") {
+            await VerifySteamVRRollbackAsync(); await VerifyWaveformsAsync();
+            File.WriteAllText(Path.Combine(App.TestDirectory!, "result.txt"), "PASS: SteamVR toggle rollback/bindings; native heading alignment/glyph; amplitude and frequency previews; waveform catalog and navigation.\n");
+            await FinishExitAsync(); return;
+        }
         string runLog = (await _client.CallAsync("snapshot"))["data"]!["log_path"]!.GetValue<string>();
         using (var logStream = new FileStream(runLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         using (var logReader = new StreamReader(logStream, System.Text.Encoding.UTF8)) {
@@ -393,7 +432,7 @@ public sealed partial class MainWindow : Window
         }
         if (!ExtendsContentIntoTitleBar || Navigation.GetType() != typeof(NavigationView)) throw new Exception("Stock WinUI navigation/title bar missing.");
         if (AppWindow.Presenter is not OverlappedPresenter presenter || presenter.PreferredMinimumWidth != (int)Math.Ceiling(MinimumWidth * Root.XamlRoot.RasterizationScale) || presenter.PreferredMinimumHeight != (int)Math.Ceiling(MinimumHeight * Root.XamlRoot.RasterizationScale)) throw new Exception("Native minimum window dimensions are not set.");
-        if (PauseButton.Content?.ToString() != "暂停") throw new Exception("Pause button label is wrong.");
+        if (ServicePlaybackIcon.Glyph != "\uE769" || PauseButton.IsChecked != true || PauseButton.ActualWidth != 28 || PauseButton.ActualHeight != 24 || ServicePlaybackIcon.FontSize != 12) throw new Exception("Service button must match preview's compact native playback icon style.");
         if (ViewModel.StatusLine != ViewModel.Status + " · 等待读取模型 OSC 参数") throw new Exception("Waiting hint is not in the global status line.");
         var scanDevice = ViewModel.Devices[0]; string serviceStatus = ViewModel.Status;
         var scanResult = new TaskCompletionSource<JsonArray>(); var scanTask = scanDevice.ScanAsync(() => scanResult.Task);
@@ -571,6 +610,7 @@ public sealed partial class MainWindow : Window
         }
         ViewModel.Theme = "system";
         Root.Background = null;
+        await VerifySteamVRRollbackAsync();
         await VerifyWaveformsAsync();
         var changedChannel = ViewModel.Devices[0].Channels[0]; changedChannel.SocketEnabled = false;
         ViewModel.Theme = "dark";
@@ -578,10 +618,18 @@ public sealed partial class MainWindow : Window
         var persisted = (await _client.CallAsync("init"))["data"]!;
         if (persisted["settings"]!["general"]!["theme"]!.GetValue<string>() != "dark") throw new Exception("Theme setting was not persisted.");
         if (persisted["basic"]!["dglab3"]!["coyote"]!["channel_a"]!["socket_enabled"]!.GetValue<bool>()) throw new Exception("Hot save did not persist.");
-        ViewModel.StopCommand.Execute(null); await Task.Delay(300); await ViewModel.PollAsync();
-        if (!ViewModel.Status.Contains("已暂停")) throw new Exception("Independent pause event failed.");
-        await ViewModel.DeviceActionAsync("resume");
-        string result = "PASS: waveform subpage, import/deduplication, previews, catalog reorder, device isolation, live custom selection, both themes; no Save button; automatic coalesced settings application/persistence and invalid-input protection; scoped QR selects App without displacing connected BLE hosts; computed-strength meter/source labels are independent of waveform samples; default 940x640 compact layout; global hints and help; themes, five pages and three sizes; 24 rapid switches preserve settings; pause/resume and immediate-hide shutdown.\n";
+        var busyOperation = new TaskCompletionSource();
+        ViewModel.Run(() => busyOperation.Task);
+        if (!ViewModel.Busy || !PauseButton.IsEnabled) throw new Exception("Pause must remain available during other backend operations.");
+        PauseButton.Command.Execute(null);
+        if (ViewModel.OutputPaused || ServicePlaybackIcon.Glyph != "\uE769") throw new Exception("Pause icon must wait for confirmed backend state.");
+        busyOperation.SetResult(); await Task.Delay(300); await ViewModel.PollAsync();
+        if (!ViewModel.Status.Contains("已暂停") || !ViewModel.OutputPaused || ServicePlaybackIcon.Glyph != "\uE768" || PauseButton.IsChecked != false || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(PauseButton) != "恢复") throw new Exception("Combined pause button did not confirm independent pause.");
+        PauseButton.Command.Execute(null);
+        for (int i = 0; i < 200 && ViewModel.Busy; i++) await Task.Delay(10);
+        await ViewModel.PollAsync();
+        if (ViewModel.OutputPaused || ServicePlaybackIcon.Glyph != "\uE769" || PauseButton.IsChecked != true || ViewModel.Status != "服务运行中") throw new Exception("The same button did not resume service.");
+        string result = "PASS: waveform chevron entry and parent breadcrumbs; animated histogram, preview pause/resume and timer cleanup; import/deduplication, catalog reorder, device isolation, live custom selection, both themes; no Save button; automatic coalesced settings application/persistence and invalid-input protection; scoped QR selects App without displacing connected BLE hosts; computed-strength meter/source labels are independent of waveform samples; default 940x640 compact layout; global hints and help; themes, five pages and three sizes; 24 rapid switches preserve settings; pause/resume and immediate-hide shutdown.\n";
         if (Preview) {
             changedChannel.SocketEnabled = true; ViewModel.Background = false;
             ViewModel.UpdateState(testState); Navigation.SelectedItem = navigationItems[0];
@@ -605,11 +653,58 @@ public sealed partial class MainWindow : Window
 
     private async Task VerifyWaveformsAsync()
     {
+        static bool Shown(DependencyObject node) {
+            for (DependencyObject? current = node; current != null; current = VisualTreeHelper.GetParent(current))
+                if (current is UIElement element && element.Visibility != Visibility.Visible) return false;
+            return true;
+        }
         Navigation.SelectedItem = Navigation.MenuItems[0];
+        await Task.Delay(100); Root.UpdateLayout();
+        // RenderTargetBitmap cannot capture the DWM Mica surface.
+        Root.Background = new SolidColorBrush(Root.ActualTheme == ElementTheme.Dark ? Windows.UI.Color.FromArgb(255, 32, 32, 32) : Windows.UI.Color.FromArgb(255, 243, 243, 243));
+        var entry = Descendants((Page)ContentFrame.Content).OfType<CommunityToolkit.WinUI.Controls.SettingsCard>().Single(card => Equals(card.Header, "波形库"));
+        if (!entry.IsClickEnabled || !entry.IsActionIconVisible || entry.Content != null || !ReferenceEquals(entry.Command, ViewModel.WaveformsCommand)) throw new Exception("Waveform entry must be a clickable settings card with a right chevron, not a nested button.");
+        var rootHeading = Descendants(HeaderBreadcrumb).OfType<TextBlock>().Single(t => t.Text == "基本设置" && t.ActualWidth > 0 && Shown(t));
+        var rootPosition = rootHeading.TransformToVisual(Root).TransformPoint(default);
+        double rootBaseline = rootPosition.Y + rootHeading.BaselineOffset;
         OpenWaveforms(); await Task.Delay(100);
         var page = (WaveformsPage)ContentFrame.Content;
         await page.LoadTask;
-        if (!AppTitleBar.IsBackButtonVisible || PageTitle.Text != "波形库") throw new Exception("Waveform subpage/back action is missing.");
+        Root.UpdateLayout();
+        var parentHeading = Descendants(HeaderBreadcrumb).OfType<TextBlock>().Single(t => t.Text == "基本设置" && t.ActualWidth > 0 && Shown(t));
+        var parentPosition = parentHeading.TransformToVisual(Root).TransformPoint(default);
+        const double layoutPixel = .01; // No visible pixel shift, even at fractional DPI.
+        if (Math.Abs(parentPosition.X - rootPosition.X) > layoutPixel || Math.Abs(parentPosition.Y + parentHeading.BaselineOffset - rootBaseline) > layoutPixel || HeaderBreadcrumb.ItemTemplate != null) throw new Exception($"Native root/parent heading alignment changed: {rootPosition} vs {parentPosition}.");
+        await CaptureAsync("heading-native");
+        var parentItem = Descendants(HeaderBreadcrumb).OfType<BreadcrumbBarItem>().Single(item => Equals(item.Content, "基本设置"));
+        var chevron = Descendants(parentItem).OfType<TextBlock>().Single(t => t.Name == "PART_ChevronTextBlock");
+        if (chevron.Text != "\uE974" || chevron.FontSize != 20 || parentHeading.FontSize != 28) throw new Exception("Breadcrumb heading must use official native glyph and typography resources.");
+        if (AppTitleBar.IsBackButtonVisible || PageTitle.Visibility != Visibility.Collapsed || HeaderBreadcrumb.Visibility != Visibility.Visible || !((System.Collections.Generic.IEnumerable<string>)HeaderBreadcrumb.ItemsSource).SequenceEqual(new[] { "基本设置", "波形库" })) throw new Exception("Waveform subpage must use parent-title breadcrumbs without a caption back button.");
+        NavigateBreadcrumb(1);
+        if (!ReferenceEquals(page, ContentFrame.Content)) throw new Exception("Clicking the current breadcrumb should not reload the page.");
+        var builtinList = Descendants(page).OfType<ListView>().Single(l => l.Name == "EnabledList");
+        var fast = WaveformsPage.PreviewGeometry(new byte[] { 25 }, WaveformsPage.BuildPhase(new byte[] { 10 }), 2000, 600, 100);
+        var slow = WaveformsPage.PreviewGeometry(new byte[] { 100 }, WaveformsPage.BuildPhase(new byte[] { 240 }), 2000, 600, 100);
+        if (fast.Count != 200 || slow.Count != 2 || fast.Any(b => Math.Abs(b.Height - 25) > .01) || slow.Any(b => Math.Abs(b.Height - 100) > .01) || Math.Abs(fast[1].X - fast[0].X - 3) > .01 || Math.Abs(slow[1].X - slow[0].X - 300) > .01) throw new Exception("Combined preview must encode amplitude in height and physical frequency in spacing.");
+        foreach (double time in new[] { 0.0, .1, 125.5, 2001.0, 3500123.0 }) {
+            var wrapped = WaveformsPage.PreviewGeometry(new byte[] { 25 }, WaveformsPage.BuildPhase(new byte[] { 10 }), time, 400, 100);
+            if (wrapped.Count != 200 || wrapped.Any(b => b.X < 0 || b.X + b.Width > 400.01 || b.Height != 25)) throw new Exception("Looped/negative preview phase or clipping is incorrect.");
+        }
+        var changing = WaveformsPage.PreviewGeometry(new byte[] { 25, 100 }, WaveformsPage.BuildPhase(new byte[] { 10, 240 }), 2000, 600, 100);
+        if (Math.Abs(changing[3].X - 16.425) > .0001) throw new Exception("Frequency changes reset pulse phase instead of integrating it.");
+        var envelope = WaveformsPage.PreviewGeometry(new byte[] { 25, 100 }, Array.Empty<double>(), 2000, 600, 100);
+        if (envelope.Count != 80 || envelope[0].Height != 25 || envelope[1].Height != 100) throw new Exception("Opossum envelope must retain 25 ms amplitudes without a fake frequency.");
+        foreach (var (name, suffix, changes) in new[] { ("脉冲", "pulse", true), ("压缩", "compress", true), ("树荫", "shade", false) }) {
+            builtinList.SelectedItem = builtinList.Items.OfType<WaveformItem>().Single(wave => wave.Name == name);
+            await Task.Delay(450); page.SetPreviewPlayback(false); Root.UpdateLayout();
+            var preview = await ViewModel.WaveformOperationAsync("waveform_preview", new() { ["kind"] = "coyote", ["id"] = ((WaveformItem)builtinList.SelectedItem).Id });
+            var phase = WaveformsPage.BuildPhase(Convert.FromHexString(preview["frequency_hex"]!.GetValue<string>()));
+            var rates = phase.Zip(phase.Skip(1), (a, b) => b - a).ToArray();
+            var bars = Descendants(page).OfType<Canvas>().Single(c => c.Name == "PreviewCanvas").Children.OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Where(b => b.Visibility == Visibility.Visible).ToArray();
+            if (Descendants(page).OfType<Canvas>().Count() != 1 || bars.Length == 0 || bars.Any(b => b.Height <= 0) || bars.Max(b => b.Height) - bars.Min(b => b.Height) > .01 || (rates.Max() - rates.Min() > .01) != changes) throw new Exception("Constant amplitude/frequency must share one truthful pulse plot: " + name);
+            await CaptureAsync("waveform-frequency-" + suffix);
+        }
+        if (WaveformsPage.FrequencyHz(10) != 100 || WaveformsPage.FrequencyHz(100) != 10 || WaveformsPage.FrequencyHz(200) != 1000.0 / 600 || WaveformsPage.FrequencyHz(240) != 1) throw new Exception("Coyote frequency bytes were not decoded to real Hz.");
         string pulsePath = Path.Combine(App.TestDirectory!, "smoke.pulse");
         File.WriteAllText(pulsePath, "Dungeonlab+pulse:0,1,16=0,83,3,1,1/0-1,100-1");
         await page.ImportPathsAsync(new[] { pulsePath });
@@ -620,7 +715,14 @@ public sealed partial class MainWindow : Window
         var imported = library.Items.OfType<WaveformItem>().Single(i => !i.Builtin);
         library.SelectedItem = imported;
         await Task.Delay(150);
-        if (Descendants(page).OfType<Microsoft.UI.Xaml.Shapes.Polyline>().Single().Points.Count == 0) throw new Exception("Waveform preview did not render.");
+        var histogram = Descendants(page).OfType<Canvas>().Single(c => c.Name == "PreviewCanvas");
+        if (!histogram.Children.OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Any(bar => bar.Height > 0) || !page.IsPreviewAnimating) throw new Exception("Dynamic waveform histogram did not render/start.");
+        int frame = page.PreviewFrameCount; await Task.Delay(100);
+        if (page.PreviewFrameCount <= frame) throw new Exception("Waveform histogram is static instead of animated.");
+        page.SetPreviewPlayback(false); frame = page.PreviewFrameCount; await Task.Delay(100);
+        if (page.IsPreviewAnimating || page.PreviewFrameCount != frame) throw new Exception("Pause preview did not freeze the visual clock.");
+        page.SetPreviewPlayback(true); await Task.Delay(100);
+        if (!page.IsPreviewAnimating || page.PreviewFrameCount <= frame) throw new Exception("Preview did not resume.");
         await page.MoveSelectionAsync(new[] { imported.Id }.ToHashSet(), true);
         if (!enabled.Items.OfType<WaveformItem>().Any(i => i.Id == imported.Id) || library.Items.OfType<WaveformItem>().Any(i => i.Id == imported.Id)) throw new Exception("Cross-list waveform move failed.");
         await page.MoveSelectionAsync(new[] { imported.Id }.ToHashSet(), false);
@@ -632,6 +734,7 @@ public sealed partial class MainWindow : Window
         if (coyote.WaveformChoices[0].Name != imported.Name || opossum.Waveforms.Contains(imported.Id)) throw new Exception("Waveform library display names/isolation failed.");
         coyote.Waveform = imported.Id; await ViewModel.PendingApplyTask;
         Navigation.SelectedItem = Navigation.MenuItems[1]; await Task.Delay(150); Root.UpdateLayout();
+        if (page.IsPreviewAnimating) throw new Exception("Outgoing waveform page retained its animation timer.");
         var selector = Descendants(ContentFrame).OfType<ComboBox>().Single(b => ReferenceEquals(b.ItemsSource, coyote.WaveformChoices));
         if (selector.SelectedValue as string != imported.Id || (selector.SelectedItem as Zone)?.Name != imported.Name) throw new Exception("Imported waveform selection did not survive page navigation.");
         var saved = (await _client.CallAsync("init"))["data"]!;
@@ -639,6 +742,18 @@ public sealed partial class MainWindow : Window
         coyote.Waveform = "纯粹"; await ViewModel.PendingApplyTask;
         OpenWaveforms(); await Task.Delay(100); page = (WaveformsPage)ContentFrame.Content; await page.LoadTask;
         var kindBox = Descendants(page).OfType<ComboBox>().Single(b => b.Name == "KindBox");
+        var originalSize = AppWindow.Size;
+        double scale = Root.XamlRoot.RasterizationScale;
+        foreach (int width in new[] { 880, 940, 1120 }) {
+            AppWindow.Resize(new SizeInt32((int)Math.Ceiling(width * scale), originalSize.Height));
+            await Task.Delay(100); Root.UpdateLayout();
+            foreach (string prefix in new[] { "Library", "Enabled" }) {
+                var heading = Descendants(page).OfType<TextBlock>().Single(t => t.Name == prefix + "Heading");
+                var container = Descendants(page).OfType<Border>().Single(b => b.Name == prefix + "Container");
+                if (!ReferenceEquals(VisualTreeHelper.GetParent(heading), VisualTreeHelper.GetParent(container)) || Math.Abs(heading.TransformToVisual(page).TransformPoint(default).X - container.TransformToVisual(page).TransformPoint(default).X) > .01) throw new Exception("Waveform heading and sortable list must share an exact column: " + prefix);
+            }
+        }
+        AppWindow.Resize(originalSize); await Task.Delay(100); Root.UpdateLayout();
         foreach (string theme in new[] { "light", "dark" }) {
             ViewModel.Theme = theme;
             Root.Background = new SolidColorBrush(theme == "light" ? Windows.UI.Color.FromArgb(255, 243, 243, 243) : Windows.UI.Color.FromArgb(255, 32, 32, 32));
@@ -647,12 +762,53 @@ public sealed partial class MainWindow : Window
                 Descendants(page).OfType<ListView>().Single(l => l.Name == "EnabledList").SelectedIndex = 0;
                 await Task.Delay(150); Root.UpdateLayout();
                 if (index == 1 && Descendants(page).OfType<ListView>().SelectMany(l => l.Items.OfType<WaveformItem>()).Any(i => i.Id == imported.Id)) throw new Exception("Coyote waveform leaked into Opossum library.");
+                var previewCard = Descendants(page).OfType<Border>().Single(b => b.Name == "PreviewCard");
+                var previewTitle = Descendants(previewCard).OfType<TextBlock>().Single(t => t.Name == "PreviewTitle");
+                var selectedWave = (WaveformItem)Descendants(page).OfType<ListView>().Single(l => l.Name == "EnabledList").SelectedItem;
+                if (previewTitle.Text != selectedWave.Name || Descendants(previewCard).OfType<TextBlock>().Any(t => t != previewTitle && !string.IsNullOrEmpty(t.Text) && !InIcon(t)) || Descendants(previewCard).Any(t => ToolTipService.GetToolTip(t) != null)) throw new Exception("Waveform preview must show only the waveform name, chart and icon control.");
                 if (page.ActualWidth > ContentFrame.ActualWidth + 1 || Descendants(page).OfType<ListView>().Any(l => l.ActualHeight < 100)) throw new Exception("Waveform layout does not fit minimum window dimensions.");
                 await CaptureAsync($"{theme}-waveforms-{index}");
             }
         }
         Root.Background = null; ViewModel.Theme = "system";
-        BackRequested(AppTitleBar, new object());
-        if (ContentFrame.Content is not GeneralPage || AppTitleBar.IsBackButtonVisible) throw new Exception("Waveform subpage back navigation failed.");
+        NavigateBreadcrumb(0);
+        if (ContentFrame.Content is not GeneralPage || AppTitleBar.IsBackButtonVisible || HeaderBreadcrumb.Visibility != Visibility.Visible || PageTitle.Visibility != Visibility.Collapsed || page.IsPreviewAnimating) throw new Exception("Parent breadcrumb navigation or animation cleanup failed.");
+
+        static bool InIcon(DependencyObject node) {
+            for (DependencyObject? current = node; current != null; current = VisualTreeHelper.GetParent(current))
+                if (current is IconElement) return true;
+            return false;
+        }
+    }
+
+    private async Task VerifySteamVRRollbackAsync()
+    {
+        var initial = (JsonObject)(await _client.CallAsync("init")).DeepClone();
+        initial["data"]!["settings"]!["general"]!["steamvr_auto_start"] = false;
+        int saves = 0; string lastError = "";
+        var isolated = new MainViewModel(_client, (method, data) => {
+            if (method == "init") return Task.FromResult((JsonObject)initial.DeepClone());
+            if (method == "save") {
+                saves++;
+                if (data!["settings"]!["general"]!["steamvr_auto_start"]!.GetValue<bool>()) return Task.FromException<JsonObject>(new IOException("模拟 SteamVR 保存失败"));
+            }
+            return Task.FromResult(new JsonObject());
+        });
+        isolated.OperationError += message => lastError = message;
+        await isolated.InitializeAsync();
+        Navigation.SelectedItem = Navigation.MenuItems[0]; await Task.Delay(100); Root.UpdateLayout();
+        var page = (Page)ContentFrame.Content; var previousContext = page.DataContext;
+        try {
+            page.DataContext = isolated; await Task.Delay(50); Root.UpdateLayout();
+            var toggle = Descendants(page).OfType<ToggleSwitch>().Single(t => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "跟随 SteamVR 启动");
+            toggle.IsOn = true; await isolated.PendingApplyTask; await Task.Delay(150);
+            if (toggle.IsOn || isolated.SteamVR || saves != 1 || !lastError.Contains("保存失败")) throw new Exception($"SteamVR failed enable must revert the visible toggle without retrying: toggle={toggle.IsOn}, model={isolated.SteamVR}, saves={saves}, error={lastError}, bound={ReferenceEquals(toggle.DataContext, isolated)}.");
+            isolated.Background = !isolated.Background; await isolated.PendingApplyTask;
+            if (isolated.SteamVR || saves != 2) throw new Exception("A later unrelated edit retried the rejected SteamVR enable.");
+            var channel = isolated.Devices[0].Channels[0]; string limit = channel.Limit;
+            channel.Limit = ""; toggle.IsOn = true; await isolated.PendingApplyTask;
+            if (toggle.IsOn || isolated.SteamVR) throw new Exception("Local validation failure did not revert the SteamVR toggle.");
+            channel.Limit = limit; await isolated.PendingApplyTask;
+        } finally { page.DataContext = previousContext; Root.UpdateLayout(); }
     }
 }

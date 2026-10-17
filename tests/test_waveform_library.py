@@ -125,6 +125,41 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(max(data['amplitudes']), 100)
         self.assertLessEqual(len(data['amplitudes']), 800)
 
+    def test_animated_preview_returns_exact_25ms_samples(self):
+        self.lib.import_paths('coyote', [str(self.sample())])
+        key = next(iter(self.lib.data['coyote']['custom']))
+        data = self.lib.preview('coyote', key)
+        samples = bytes.fromhex(data['sample_hex'])
+        self.assertEqual(samples, b'\x00' * 4 + b'\x64' * 4 + b'\x00' * 4 + b'\x64' * 4)
+        self.assertEqual(data['sample_interval_ms'], 25)
+        self.assertEqual(len(samples) * data['sample_interval_ms'] / 1000, data['duration'])
+
+    def test_constant_amplitude_official_waves_keep_their_frequency(self):
+        from srv import WAVEFORMS_BY_DEVICE
+        for name, changes in (('脉冲', True), ('压缩', True), ('树荫', False)):
+            with self.subTest(name=name):
+                preview = self.lib.preview('coyote', name)
+                amplitude = bytes.fromhex(preview['sample_hex'])
+                frequency = bytes.fromhex(preview['frequency_hex'])
+                self.assertEqual(set(amplitude), {100})
+                self.assertEqual(len(frequency), len(amplitude))
+                self.assertEqual(len(set(frequency)) > 1, changes)
+                self.assertEqual(preview['frequency_hex'], ''.join(f[:8] for f in WAVEFORMS_BY_DEVICE['coyote'][name]))
+        self.assertEqual(set(bytes.fromhex(self.lib.preview('coyote', '树荫')['frequency_hex'])), {100})
+
+    def test_opossum_preview_does_not_present_dummy_prefix_as_frequency(self):
+        self.assertIsNone(self.lib.preview('opossum', self.lib.data['opossum']['enabled'][0])['frequency_hex'])
+
+    def test_long_preview_keeps_full_timing_but_overview_remains_bounded(self):
+        frames = ['0A0A0A0A00000064'] * 2000
+        path = self.sample(text=json.dumps({'device_kind': 'coyote', 'frames': frames}))
+        self.lib.import_paths('coyote', [str(path)])
+        key = next(iter(self.lib.data['coyote']['custom']))
+        data = self.lib.preview('coyote', key)
+        self.assertEqual(bytes.fromhex(data['sample_hex']), b'\x00\x00\x00\x64' * 2000)
+        self.assertEqual(data['duration'], 200)
+        self.assertLessEqual(len(data['amplitudes']), 800)
+
     def test_oversized_archive_member_is_skipped(self):
         path = self.root / 'large.zip'
         with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
