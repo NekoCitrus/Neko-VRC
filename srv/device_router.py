@@ -121,10 +121,13 @@ class DeviceRouter:
             if getter:
                 states = getter()
             elif getattr(connection, 'bound', False):
+                from srv.diagnostics import websocket_latency
                 states = ({'slot_id': connection.uuid, 'device_kind': 'coyote',
                            'device_type': 'COYOTE_030', 'device_name': '郊狼',
                            'strength': dict(connection.strength), 'strength_max': dict(connection.strength_max),
-                           'upper_strength': {c: connection.get_upper_strength(c) for c in ('A', 'B')}},)
+                           'reported_strength': dict(getattr(connection, 'reported_strength', connection.strength)),
+                           'upper_strength': {c: connection.get_upper_strength(c) for c in ('A', 'B')},
+                           'communication_latency': websocket_latency(getattr(connection, 'ws_conn', None))},)
             else:
                 states = ()
             result.extend({**state, 'transport': 'app', 'connection_uuid': connection.uuid} for state in states

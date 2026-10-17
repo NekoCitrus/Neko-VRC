@@ -67,6 +67,10 @@ class DGV4Connection:
         self.device_name = None
         self._request_counter = 0
         self._send_lock = asyncio.Lock()
+        self._pending_requests = {}
+        self._last_request_ack = None
+        self._active_outputs = set()
+        self._attached_at = time.perf_counter()
         add_ws_connection(self)
 
     @staticmethod
@@ -98,12 +102,16 @@ class DGV4Connection:
         return min(state['strength_max'][channel], limit)
 
     def get_device_states(self):
+        from srv.diagnostics import websocket_latency
+        latency = websocket_latency(self.ws_conn, self._last_request_ack)
         result = []
         for state in self.device_states.values():
             result.append({
                 **state,
                 'strength': dict(state['strength']),
+                'reported_strength': dict(state['reported_strength']),
                 'strength_max': dict(state['strength_max']),
+                'communication_latency': latency,
                 'upper_strength': {
                     channel: self.get_upper_strength(channel, slot_id=state['slot_id'])
                     for channel in ('A', 'B')
@@ -112,10 +120,13 @@ class DGV4Connection:
         return tuple(result)
 
     async def _send_frame(self, frame):
+        started = time.perf_counter()
         message = json.dumps(frame, ensure_ascii=False, separators=(',', ':'))
         logger.debug('V4 ID {}, SENDING {}', self.uuid, message)
         async with self._send_lock:
             await self.ws_conn.send(message)
+        from srv.diagnostics import record_latency
+        record_latency('app.websocket_send', started)
 
     async def _send_request(self, method, data=None):
         if method == 'device.op' and (
@@ -134,16 +145,25 @@ class DGV4Connection:
         }
         if data is not None:
             request['data'] = data
+        now = time.perf_counter()
+        self._pending_requests = {key: value for key, value in self._pending_requests.items() if now - value[0] < 60}
+        if len(self._pending_requests) >= 256:
+            self._pending_requests.pop(next(iter(self._pending_requests)))
+        self._pending_requests[request['reqId']] = (now, method)
         await self._send_frame({'type': 'message', 'data': request})
         return True
 
     def _replace_devices(self, devices):
+        was_empty = not self.device_states
         self.devices = {
             device['slotId']: dict(device)
             for device in devices
             if isinstance(device, dict) and isinstance(device.get('slotId'), str)
         }
         self._refresh_device_states(reset_all=True)
+        if was_empty and self.device_states:
+            from srv.diagnostics import record_latency
+            record_latency('app.attach_to_device_snapshot', self._attached_at)
 
     def _patch_devices(self, added, removed):
         reset_slots = set()
@@ -188,6 +208,7 @@ class DGV4Connection:
                     'device_kind': device_kind,
                     'device_name': device.get('name'),
                     'strength': {'A': 0, 'B': 0},
+                    'reported_strength': {'A': None, 'B': None},
                     'strength_max': {'A': 200, 'B': 200},
                 }
             else:
@@ -199,6 +220,7 @@ class DGV4Connection:
         previous_ids = {(slot, state['device_type']) for slot, state in previous.items()}
         current_ids = {(slot, state['device_type']) for slot, state in current.items()}
         self.device_states = current
+        self._active_outputs.intersection_update((slot, channel) for slot in current for channel in ('A', 'B'))
         self._sync_primary_device()
 
         for slot_id, device_type in current_ids - previous_ids:
@@ -237,6 +259,7 @@ class DGV4Connection:
             strength = props.get(f'intensity{channel}')
             if isinstance(strength, (int, float)):
                 state['strength'][channel] = max(0, min(200, int(strength)))
+                state['reported_strength'][channel] = state['strength'][channel]
             channel_state = slot_state.get(f'channel{channel}') or {}
             maximum = channel_state.get('intensityMax')
             if state['device_kind'] == 'coyote' and isinstance(maximum, (int, float)):
@@ -257,6 +280,12 @@ class DGV4Connection:
                 self._patch_slots(data.get('slots') or [])
                 return True
         elif data.get('t') == 'resp':
+            request_id = data.get('reqId')
+            pending = self._pending_requests.pop(request_id, None) if isinstance(request_id, str) else None
+            if pending:
+                from srv.diagnostics import record_latency
+                milliseconds = record_latency('app.request_ack.' + pending[1], pending[0])
+                self._last_request_ack = (milliseconds, time.perf_counter())
             result = data.get('result')
             if isinstance(result, dict) and isinstance(result.get('devices'), list):
                 self._replace_devices(result['devices'])
@@ -303,6 +332,7 @@ class DGV4Connection:
             await self._send_frame({'type': 'heartbeat'})
 
     async def serve(self):
+        self._attached_at = time.perf_counter()
         logger.info('V4 App 已连接，连接 ID：{}', self.uuid)
         heartbeat_task = None
         try:
@@ -316,6 +346,7 @@ class DGV4Connection:
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
+            self._pending_requests.clear()
             remove_ws_connection(self)
             logger.info('V4 App 已断开，连接 ID：{}', self.uuid)
 
@@ -376,6 +407,7 @@ class DGV4Connection:
 
     async def apply_settings(self, settings):
         """Update per-device caps while preserving the Socket connection."""
+        previous_limits = self.strength_limits
         self.SETTINGS = settings
         self.strength_limits = {
             device_kind: {
@@ -387,7 +419,8 @@ class DGV4Connection:
         self.strength_limit = self.strength_limits['coyote']
         for slot_id, state in tuple(self.device_states.items()):
             for channel in ('A', 'B'):
-                if state['strength'][channel] != 0:
+                if (previous_limits[state['device_kind']][channel] != self.strength_limits[state['device_kind']][channel]
+                        and (state['device_kind'] == 'coyote' or (slot_id, channel) in self._active_outputs)):
                     await self.set_strength(
                         channel,
                         value=self.get_upper_strength(channel, slot_id=slot_id),
@@ -405,6 +438,7 @@ class DGV4Connection:
         for state in tuple(self.device_states.values()):
             if device_kind is not None and state['device_kind'] != device_kind:
                 continue
+            device_frames = [normalize_socket_frame(frame, state['device_type']) for frame in frames]
             if state['device_kind'] == 'opossum':
                 await self.set_strength(
                     channel,
@@ -412,10 +446,6 @@ class DGV4Connection:
                     value=self.get_upper_strength(channel, slot_id=state['slot_id']),
                     slot_id=state['slot_id'],
                 )
-            device_frames = [
-                normalize_socket_frame(frame, state['device_type'])
-                for frame in frames
-            ]
             operation = {
                 's': state['slot_id'],
                 't': 0,
@@ -426,12 +456,14 @@ class DGV4Connection:
                 'v': device_frames,
             }
             await self._send_request('device.op', operation)
+            self._active_outputs.add((state['slot_id'], channel))
 
     async def clear_wave(self, channel='A', device_kind=None):
         channel = self._validate_channel(channel)
         for slot_id, state in tuple(self.device_states.items()):
             if device_kind is not None and state['device_kind'] != device_kind:
                 continue
+            self._active_outputs.discard((slot_id, channel))
             await self._send_request(
                 'device.op.clear',
                 {'s': slot_id, 'c': 0 if channel == 'A' else 1},

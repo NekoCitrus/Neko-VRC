@@ -27,12 +27,12 @@ public sealed partial class MainWindow : Window
 {
     private readonly BackendClient _client = new();
     private readonly Forms.NotifyIcon _tray = new();
-    private readonly Microsoft.UI.Xaml.DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(600) };
+    private readonly Microsoft.UI.Xaml.DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _loaded, _polling, _exiting, _allowClose;
     private Task? _exitTask;
     private NavigationTransitionInfo? _lastPageTransition;
     private const int MinimumWidth = 880, MinimumHeight = 640;
-    private const int DefaultWidth = 940, DefaultHeight = 648;
+    private const int DefaultWidth = 940, DefaultHeight = 640;
     private bool Preview => App.Arguments.FirstOrDefault() == "--preview-ui";
     public MainViewModel ViewModel { get; }
 
@@ -159,7 +159,11 @@ public sealed partial class MainWindow : Window
         // Remove the window immediately, but retain the dispatcher/process until
         // output pause, zero commands, socket/BLE cleanup and backend exit finish.
         AppWindow.Hide(); _tray.Visible = false;
-        try { _client.EmergencyStop(); await ViewModel.ThemeSaveTask; await _client.DisposeAsync(); }
+        try {
+            _client.EmergencyStop();
+            try { await ViewModel.FlushSettingsAsync(); } catch (Exception) { /* Keep last valid settings on exit. */ }
+            await _client.DisposeAsync();
+        }
         finally {
             _tray.Dispose(); Environment.ExitCode = code; _allowClose = true;
             Close(); Application.Current.Exit();
@@ -232,6 +236,21 @@ public sealed partial class MainWindow : Window
             if (waveform.ActualWidth > 131) throw new Exception("Waveform selector is not compact.");
             if (device.Kind == "coyote" && (channel.Waveforms[0] != "纯粹" || channel.Waveform != "纯粹")) throw new Exception("New Coyote profiles must default to the first Pure waveform.");
             var slider = Descendants(ContentFrame).OfType<Slider>().Single(s => ReferenceEquals(s.DataContext, channel));
+            var strengthSlider = (Controls.StrengthSlider)slider;
+            var meter = strengthSlider.LevelBar ?? throw new Exception("Native Slider meter was not attached.");
+            var source = Descendants(ContentFrame).OfType<TextBlock>().Single(t => ReferenceEquals(t.DataContext, channel) && Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "当前触发来源");
+            if (strengthSlider.CalculatedStrength != 35 || meter.IsHitTestVisible || !source.Text.Contains("计算 35")) throw new Exception("Computed-strength meter/source label use waveform samples instead of the calculated value.");
+            var nativeTrack = Descendants(slider).OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Single(r => r.Name == "HorizontalTrackRect");
+            var nativeFill = Descendants(slider).OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Single(r => r.Name == "HorizontalDecreaseRect");
+            var nativeThumb = Descendants(slider).OfType<Microsoft.UI.Xaml.Controls.Primitives.Thumb>().Single(t => t.Name == "HorizontalThumb");
+            if (nativeThumb.ActualWidth != 18 || nativeThumb.ActualHeight != 18) throw new Exception("Slider must keep the modern WinUI native thumb style, not the legacy fallback.");
+            if (meter.Height != 6 || meter.ActualHeight <= nativeTrack.ActualHeight || !ReferenceEquals(meter.Background, nativeFill.Fill)) throw new Exception("Level must be thicker than the native track and reuse its official accent brush.");
+            if (Math.Abs(meter.ActualWidth - (nativeThumb.ActualWidth / 2 + (slider.ActualWidth - nativeThumb.ActualWidth) * 35 / 200)) > 1) throw new Exception("Level endpoints are not aligned to native Slider thumb travel.");
+            strengthSlider.CalculatedStrength = 0;
+            if (meter.Visibility != Visibility.Collapsed) throw new Exception("Zero strength must hide the thick level.");
+            strengthSlider.CalculatedStrength = 200;
+            if (Math.Abs(meter.Width - (slider.ActualWidth - nativeThumb.ActualWidth / 2)) > 1) throw new Exception("Full-scale strength does not reach native Slider endpoint.");
+            strengthSlider.CalculatedStrength = 35;
             var input = Descendants(ContentFrame).OfType<TextBox>().Single(t => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "通道强度上限" && ReferenceEquals(t.DataContext, channel));
             string savedLimit = channel.Limit;
             if (slider.Minimum != 0 || slider.Maximum != 200 || slider.StepFrequency != 1 || slider.ActualWidth < 80) throw new Exception("Limit slider bounds or layout are wrong.");
@@ -317,7 +336,7 @@ public sealed partial class MainWindow : Window
             if (commands.Length != 4 || !commands.SequenceEqual(new[] { ViewModel.CurrentDevice!.ScanCommand, ViewModel.CurrentDevice.ConnectCommand, ViewModel.CurrentDevice.DisconnectCommand, ViewModel.CurrentDevice.QrCommand })) throw new Exception("Connection actions are not in the device page.");
         }
         if (tag == "general" && Descendants(page).OfType<Button>().Count(b => Equals(b.Content, "App 扫码连接") && ReferenceEquals(b.Command, ViewModel.QrCommand)) != 1) throw new Exception("General QR action was not restored.");
-        if (Descendants(HeaderActions).OfType<Button>().Count() != 3 || Descendants(HeaderActions).OfType<Button>().Any(b => Equals(b.Content, "退出"))) throw new Exception("Header must contain only Save/Pause/Resume.");
+        if (Descendants(HeaderActions).OfType<Button>().Count() != 2 || Descendants(HeaderActions).OfType<Button>().Any(b => Equals(b.Content, "退出") || Equals(b.Content, "保存并应用"))) throw new Exception("Header must contain only Pause/Resume.");
         if (_lastPageTransition == null || _lastPageTransition is SuppressNavigationTransitionInfo) throw new Exception("Page animation was disabled.");
         var actionsOrigin = GlobalActions.TransformToVisual(LayoutArea).TransformPoint(default);
         var statusOrigin = ServiceStatus.TransformToVisual(LayoutArea).TransformPoint(default);
@@ -331,6 +350,17 @@ public sealed partial class MainWindow : Window
         await _client.CallAsync("bluetooth_check");
         ViewModel.PrepareSmokePorts(FreePort(), FreePort(), FreePort(), FreePort(true));
         await ViewModel.SaveAsync(); await ViewModel.DeviceActionAsync("start"); await ViewModel.PollAsync();
+        string runLog = (await _client.CallAsync("snapshot"))["data"]!["log_path"]!.GetValue<string>();
+        using (var logStream = new FileStream(runLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var logReader = new StreamReader(logStream, System.Text.Encoding.UTF8)) {
+            string fileLog = logReader.ReadToEnd();
+            if (!fileLog.Contains("计算强度 device=") || !fileLog.Contains("neko-vrc:") || fileLog.Contains("shocking_vrchat:")) throw new Exception("Per-run log file/brand/computed-strength persistence failed.");
+            if (ViewModel.Logs.Contains(runLog) || ViewModel.Logs.Split('\n', StringSplitOptions.RemoveEmptyEntries).Any(line => !line.Contains("计算 ") || !line.Contains("实际 "))) throw new Exception("Debug must show strength values only, not full diagnostic logs.");
+        }
+        if (MainViewModel.FormatCommunicationLatency(new JsonObject { ["kind"] = "app_ack", ["milliseconds"] = 12.5 }) != "App 确认往返 12.5 ms" ||
+            MainViewModel.FormatCommunicationLatency(new JsonObject { ["kind"] = "ble_write_response", ["milliseconds"] = 3.25 }) != "蓝牙写入 3.25 ms" ||
+            MainViewModel.FormatCommunicationLatency(new JsonObject { ["kind"] = "ble_write_enqueue", ["milliseconds"] = 1.5 }) != "蓝牙入队 1.5 ms" ||
+            MainViewModel.FormatCommunicationLatency(null) != "通信延迟：暂无数据") throw new Exception("Connection latency labels must distinguish measured links and missing data.");
         var qr = (await _client.CallAsync("qr"))["data"]!["matrix"]!.AsArray();
         if (qr.Count < 21 || qr.Any(row => row!.AsArray().Count != qr.Count)) throw new Exception("App QR matrix is invalid.");
         if (ViewModel.Devices.Count != 2 || ViewModel.Devices.Any(d => d.Channels.Count != 2)) throw new Exception("Four channels were not loaded.");
@@ -357,8 +387,61 @@ public sealed partial class MainWindow : Window
             ["sockets"] = new JsonArray(new JsonObject { ["zone_id"] = "Socket_One", ["label"] = "Socket 部位一" }, new JsonObject { ["zone_id"] = "Socket_Two", ["label"] = "Socket 部位二" }),
             ["plugs"] = new JsonArray(new JsonObject { ["zone_id"] = "Plug_One", ["label"] = "Plug 部位一" }),
         };
-        var testState = new JsonObject { ["service"] = "running", ["avatar"] = catalog.DeepClone() };
+        var liveChannels = new JsonObject();
+        foreach (string kind in new[] { "coyote", "opossum" }) {
+            var channels = new JsonObject();
+            foreach (string channel in new[] { "A", "B" }) channels[channel] = new JsonObject {
+                ["strength_percentage"] = 0.5, ["calculated_strength"] = 35.0, ["upper_strength"] = 70,
+                ["trigger_type"] = channel == "A" ? "sps_socket" : "lms", ["sent_strengths"] = new JsonArray(100, 0, 100, 0),
+            };
+            liveChannels[kind] = channels;
+        }
+        var testState = new JsonObject { ["service"] = "running", ["avatar"] = catalog.DeepClone(), ["runtime"] = new JsonObject { ["device_channels"] = liveChannels,
+            ["devices"] = new JsonArray(
+                new JsonObject { ["device_kind"] = "coyote", ["device_name"] = "测试郊狼", ["transport"] = "bluetooth", ["communication_latency"] = new JsonObject { ["kind"] = "ble_write_response", ["milliseconds"] = 3.25 } },
+                new JsonObject { ["device_kind"] = "opossum", ["device_name"] = "测试负鼠", ["transport"] = "app", ["communication_latency"] = new JsonObject { ["kind"] = "app_ack", ["milliseconds"] = 12.5 } }) } };
         ViewModel.UpdateState(testState);
+        if (!ViewModel.Devices[0].Status.Contains("蓝牙写入 3.25 ms") || !ViewModel.Devices[1].Status.Contains("App 确认往返 12.5 ms")) throw new Exception("Connection card latencies are missing or mixed between device types.");
+        var autoChannel = ViewModel.Devices[0].Channels[0];
+        string originalAutoLimit = autoChannel.Limit;
+        autoChannel.Limit = "77";
+        await ViewModel.PendingApplyTask;
+        var autoPersisted = (await _client.CallAsync("init"))["data"]!;
+        if (autoPersisted["basic"]!["dglab3"]!["coyote"]!["channel_a"]!["strength_limit"]!.GetValue<int>() != 77) throw new Exception("Limit edit was not automatically applied/persisted.");
+        for (int value = 78; value < 84; value++) { autoChannel.LimitValue = value; await Task.Delay(50); }
+        autoPersisted = (await _client.CallAsync("init"))["data"]!;
+        if (autoPersisted["basic"]!["dglab3"]!["coyote"]!["channel_a"]!["strength_limit"]!.GetValue<int>() < 78) throw new Exception("Continuous dragging was delayed until release instead of throttled live application.");
+        await ViewModel.PendingApplyTask;
+        autoChannel.Limit = "77";
+        await ViewModel.PendingApplyTask;
+        autoChannel.Limit = "";
+        await ViewModel.PendingApplyTask;
+        autoPersisted = (await _client.CallAsync("init"))["data"]!;
+        if (autoPersisted["basic"]!["dglab3"]!["coyote"]!["channel_a"]!["strength_limit"]!.GetValue<int>() != 77 || !ErrorBar.IsOpen) throw new Exception("Invalid pending input overwrote the last valid limit.");
+        autoChannel.Limit = originalAutoLimit;
+        await ViewModel.PendingApplyTask;
+        bool originalBackground = ViewModel.Background;
+        ViewModel.Background = !originalBackground;
+        await ViewModel.PendingApplyTask;
+        autoPersisted = (await _client.CallAsync("init"))["data"]!;
+        if (autoPersisted["settings"]!["general"]!["run_in_background"]!.GetValue<bool>() == originalBackground) throw new Exception("General setting was not automatically applied.");
+        ViewModel.Background = originalBackground;
+        await ViewModel.PendingApplyTask;
+        ViewModel.QrReady -= ShowQr;
+        bool qrRaised = false;
+        Action<JsonArray> qrCapture = matrix => qrRaised = matrix.Count >= 21;
+        ViewModel.QrReady += qrCapture;
+        try {
+            ViewModel.Devices[0].HasBluetoothConnection = true;
+            await ViewModel.ShowQrAsync();
+            if (!qrRaised || ViewModel.Devices[0].Mode != "bluetooth" || ViewModel.Devices[1].Mode != "app") throw new Exception("General QR displaced a connected BLE host or failed to select App routing.");
+            await ViewModel.ShowQrAsync("coyote");
+            if (ViewModel.Devices[0].Mode != "app") throw new Exception("Device QR did not select its own App route.");
+        } finally {
+            ViewModel.QrReady -= qrCapture; ViewModel.QrReady += ShowQr;
+            foreach (var device in ViewModel.Devices) { device.HasBluetoothConnection = false; device.Mode = "bluetooth"; }
+            await ViewModel.FlushSettingsAsync();
+        }
         if (ViewModel.StatusLine != ViewModel.Status + " · " + ViewModel.Avatar || ServiceStatus.Text != ViewModel.StatusLine) throw new Exception("Avatar status-line binding failed.");
         foreach (var (pcs, lms, expected) in new[] {
             (false, false, "无任何可用插座/插头参数"),
@@ -456,6 +539,10 @@ public sealed partial class MainWindow : Window
                         if (Descendants((Page)ContentFrame.Content).OfType<CommunityToolkit.WinUI.Controls.SettingsCard>().Any() || log.ActualHeight < ContentFrame.ActualHeight - 9 || log.ActualWidth < ContentFrame.ActualWidth - 1 || !log.IsReadOnly) throw new Exception("Debug page must contain only the full-height read-only log.");
                         ViewModel.Logs = "日志显示测试\n第二条打印信息";
                         if (log.Text.Replace("\r\n", "\n").Replace('\r', '\n') != ViewModel.Logs) throw new Exception("Log binding is not updated: " + System.Text.Json.JsonSerializer.Serialize(log.Text));
+                        ViewModel.Logs = string.Join('\n', Enumerable.Range(0, 150).Select(i => $"21:00:00 郊狼 A：计算 {i} / 实际 100"));
+                        await Task.Delay(60);
+                        var logScroll = Descendants(log).OfType<ScrollViewer>().First(s => s.ScrollableHeight > 0);
+                        if (Math.Abs(logScroll.VerticalOffset - logScroll.ScrollableHeight) > 1) throw new Exception("Debug log did not automatically follow the latest line.");
                     }
                     await CaptureAsync($"{theme.ToString().ToLowerInvariant()}-{item.Tag}{suffix}");
                 }
@@ -472,7 +559,7 @@ public sealed partial class MainWindow : Window
         ViewModel.StopCommand.Execute(null); await Task.Delay(300); await ViewModel.PollAsync();
         if (!ViewModel.Status.Contains("已暂停")) throw new Exception("Independent pause event failed.");
         await ViewModel.DeviceActionAsync("resume");
-        string result = "PASS: global waiting/availability/fallback hints after service status, no repeated channel descriptions; three accessible help icons/tooltips per channel; three aligned trigger columns and tick-free 0-200 sliders; immediate theme autosave; log-only debug; default 940x648 footer/card alignment without scrolling; native transitions and 24 rapid switches preserve settings; five pages in both themes at three sizes; QR, hot save, pause/resume and immediate-hide shutdown.\n";
+        string result = "PASS: no Save button; automatic coalesced settings application/persistence and invalid-input protection; scoped QR selects App without displacing connected BLE hosts; computed-strength meter/source labels are independent of waveform samples; default 940x640 compact layout; global hints and help; themes, five pages and three sizes; 24 rapid switches preserve settings; pause/resume and immediate-hide shutdown.\n";
         if (Preview) {
             changedChannel.SocketEnabled = true; ViewModel.Background = false;
             ViewModel.UpdateState(testState); Navigation.SelectedItem = navigationItems[0];

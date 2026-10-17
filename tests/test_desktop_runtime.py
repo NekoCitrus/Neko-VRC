@@ -455,9 +455,10 @@ class DeviceRuntimeApplySettingsTests(unittest.IsolatedAsyncioTestCase):
             runtime.chatbox_manager.last_status_text = '郊狼 MAX A:80 B:70'
             await runtime._apply_settings(copy.deepcopy(settings))
         old_client.send_message.assert_not_called()
-        old_client._sock.close.assert_called_once()
+        old_client._sock.close.assert_not_called()
         await runtime.chatbox_manager.update_chatbox([])
-        new_client.send_message.assert_called_once_with('/chatbox/input', ['', True, False])
+        old_client.send_message.assert_called_once_with('/chatbox/input', ['', True, False])
+        new_client.send_message.assert_not_called()
         runtime.chatbox_manager.cleanup(notify=False)
 
     async def test_disabling_chatbox_clears_previous_display(self):
@@ -948,10 +949,55 @@ class OSCQueryServiceTests(unittest.TestCase):
 
 
 class V4ConnectionStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_ack_latency_is_exposed_per_app_connection(self):
+        connection = DGV4Connection(SimpleNamespace(send=AsyncMock(), latency=0.0125), settings=apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS)))
+        self.addCleanup(srv.remove_ws_connection, connection)
+        connection._replace_devices([
+            {'slotId': 'opossum', 'type': 'OVC_1', 'slotState': {'hasDevice': True}},
+        ])
+        self.assertEqual(connection.get_device_states()[0]['communication_latency'], {'kind': 'app_ping', 'milliseconds': 12.5})
+        await connection._send_request('device.op', {'s': 'opossum'})
+        request_id = next(iter(connection._pending_requests))
+        connection._handle_data({'t': 'resp', 'reqId': request_id, 'result': {}})
+        sample = connection.get_device_states()[0]['communication_latency']
+        self.assertEqual(sample['kind'], 'app_ack')
+        self.assertGreaterEqual(sample['milliseconds'], 0)
+        connection._last_request_ack = (5, time.perf_counter() - 31)
+        self.assertEqual(connection.get_device_states()[0]['communication_latency']['kind'], 'app_ping')
+
+    async def test_hot_caps_raise_coyote_from_zero_without_arming_idle_opossum(self):
+        connection = self.make_connection()
+        connection._replace_devices([
+            {'slotId': 'coyote', 'type': 'COYOTE_030', 'props': {'intensityA': 0},
+             'slotState': {'hasDevice': True, 'channelA': {'intensityMax': 50}}},
+            {'slotId': 'opossum', 'type': 'OVC_1', 'props': {'intensityA': 100}, 'slotState': {'hasDevice': True}},
+        ])
+        connection.strength_limits['coyote']['A'] = 0
+        connection.set_strength = AsyncMock()
+        connection._send_request = AsyncMock(return_value=True)
+        updated = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS))
+        updated['dglab3']['coyote']['channel_a']['strength_limit'] = 70
+        updated['dglab3']['opossum']['channel_a']['strength_limit'] = 60
+        await connection.apply_settings(updated)
+        self.assertTrue(any(call.kwargs.get('slot_id') == 'coyote' and call.args == ('A',) and call.kwargs['value'] == 50 for call in connection.set_strength.await_args_list))
+        self.assertFalse(any(call.kwargs.get('slot_id') == 'opossum' for call in connection.set_strength.await_args_list))
+        await connection.send_wave('A', '["0A0A0A0A64646464"]', device_kind='opossum')
+        connection.set_strength.reset_mock()
+        updated['dglab3']['opossum']['channel_a']['strength_limit'] = 75
+        await connection.apply_settings(updated)
+        connection.set_strength.assert_awaited_once_with('A', value=75, slot_id='opossum')
+        await connection.clear_wave('A', 'opossum')
+        connection.set_strength.reset_mock()
+        updated['dglab3']['opossum']['channel_a']['strength_limit'] = 85
+        await connection.apply_settings(updated)
+        connection.set_strength.assert_not_awaited()
+
     def make_connection(self):
         connection = object.__new__(DGV4Connection)
         connection.devices = {}
         connection.device_states = {}
+        connection._attached_at = time.perf_counter()
+        connection._active_outputs = set()
         connection.slot_id = None
         connection.device_type = None
         connection.device_name = None
@@ -1746,7 +1792,9 @@ class WebSocketPairingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(snapshot['protocol'], 'v4')
                 self.assertEqual(snapshot['device_id'], 'coyote-slot')
                 self.assertEqual(snapshot['channels']['A']['upper_strength'], 80)
-                self.assertEqual(snapshot['channels']['A']['actual_strength'], 80)
+                # The App has only reported 12. Sending a target of 80 must
+                # never impersonate a confirmed physical strength of 80.
+                self.assertEqual(snapshot['channels']['A']['actual_strength'], 12)
 
                 client = SimpleUDPClient('127.0.0.1', settings['osc']['listen_port'])
                 client.send_message('/avatar/parameters/OGB/Pen/V4_Test/PenOthers', [0.4])

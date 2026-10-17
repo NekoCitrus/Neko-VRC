@@ -37,8 +37,8 @@
      <TextBlock Text="基本设置" FontSize="26" Margin="0,0,0,16"/>
      <Border Style="{StaticResource SettingsCard}">
       <StackPanel>
-       <TextBlock Text="使用 OSCQuery，无需额外 OSC 分流软件。" Margin="0,0,0,12"/>
-       <TextBlock Text="在郊狼和负鼠页面分别选择 App 或蓝牙直连。"/>
+       <TextBlock Text="无需 OSC 分流软件。在郊狼和负鼠页面分别选择 App 或蓝牙直连。" Margin="0,0,0,12"/>
+       <TextBlock Text=""/>
        <Button Content="App 扫码连接" Command="{Binding QrCommand}" HorizontalAlignment="Left" Margin="0,16,0,0"/>
       </StackPanel>
      </Border>

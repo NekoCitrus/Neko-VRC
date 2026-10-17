@@ -43,12 +43,13 @@ def frame_bytes(frame):
     return raw
 
 
-def coyote_packet(a, b, strength_a, strength_b):
+def coyote_packet(a, b, strength_a, strength_b, sequence=0, change_strength=True):
     a, b = frame_bytes(a), frame_bytes(b)
     if any(not 10 <= value <= 240 for value in a[:4] + b[:4]):
         raise ValueError('郊狼 3.0 编码频率必须为 10~240。')
-    # Sequence 0 requests no ack; use absolute changes for BOTH channels.
-    return bytes((0xB0, 0x0F, strength(strength_a), strength(strength_b))) + a + b
+    if type(sequence) is not int or not 0 <= sequence <= 15:
+        raise ValueError('郊狼序列号必须为 0~15。')
+    return bytes((0xB0, sequence << 4 | (0x0F if change_strength else 0), strength(strength_a), strength(strength_b))) + a + b
 
 
 def coyote_limits(a, b, frequency=(0, 0), amplitude=(0, 0)):

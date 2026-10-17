@@ -41,6 +41,7 @@ class DGConnection:
         self.SETTINGS = SETTINGS
         self.master_uuid = SETTINGS['ws']['master_uuid']
         self.strength = {'A': 0, 'B': 0}
+        self.reported_strength = {'A': None, 'B': None}
         self.strength_max = {'A': 0, 'B': 0}
         self.strength_limit = {
             'A': SETTINGS['dglab3']['coyote']['channel_a']['strength_limit'],
@@ -81,6 +82,7 @@ class DGConnection:
                 if any(value < 0 or value > 200 for value in values):
                     raise ValueError('Strength values must be between 0 and 200.')
                 self.strength['A'], self.strength['B'], self.strength_max['A'], self.strength_max['B'] = values
+                self.reported_strength = dict(self.strength)
                 for channel in ('A', 'B'):
                     limit = self.get_upper_strength(channel)
                     if self.strength[channel] not in (0, limit):
@@ -134,13 +136,14 @@ class DGConnection:
 
     async def apply_settings(self, settings):
         """Update channel caps without reconnecting the App."""
+        previous_limits = self.strength_limit
         self.SETTINGS = settings
         self.strength_limit = {
             'A': settings['dglab3']['coyote']['channel_a']['strength_limit'],
             'B': settings['dglab3']['coyote']['channel_b']['strength_limit'],
         }
         for channel in ('A', 'B'):
-            if self.strength[channel] != 0:
+            if self.strength_limit[channel] != previous_limits[channel]:
                 await self.set_strength(channel, value=self.get_upper_strength(channel))
 
     async def send_wave(self, channel='A', wavestr=DEFAULT_WAVE, device_kind='coyote'):

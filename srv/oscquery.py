@@ -5,12 +5,17 @@ import math
 import threading
 import time
 import uuid
+import os
+import re
+from pathlib import Path
+from http.client import HTTPException
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import ProxyHandler, build_opener
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from loguru import logger
+from pythonosc.udp_client import SimpleUDPClient
 from zeroconf import ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
 from .sps_depth import LMS_PROXIMITY_ADDRESS, PCS_PROXIMITY_ADDRESS, sps_osc_bindings
@@ -19,6 +24,8 @@ from .config_manager import default_trigger_switches
 
 OSCQUERY_SERVICE_TYPE = '_oscjson._tcp.local.'
 OSC_SERVICE_TYPE = '_osc._udp.local.'
+OGB_ENABLED_INTERVAL = 5.0
+OGB_ENABLED_ADDRESS = '/avatar/parameters/OGB_ENABLED'
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,7 @@ class VRChatOSCQueryClient:
         self.request_timeout = float(request_timeout)
         self.browser = None
         self.thread = None
+        self.heartbeat_thread = None
         self.stop_event = threading.Event()
         self.refresh_event = threading.Event()
         self.lock = threading.Lock()
@@ -110,6 +118,11 @@ class VRChatOSCQueryClient:
         self.force_publish = False
         self.opener = build_opener(ProxyHandler({}))
         self.last_values_observed_at = 0.0
+        self.last_query_success = 0.0
+        self.last_ogb_destination = None
+        self.cached_endpoint = None
+        self.last_log_probe = 0.0
+        self.split_endpoints = set()
 
     def start(self):
         self.stop_event.clear()
@@ -124,7 +137,57 @@ class VRChatOSCQueryClient:
             name='vrchat-oscquery-client',
         )
         self.thread.start()
+        self.heartbeat_thread = threading.Thread(
+            target=self._ogb_heartbeat, daemon=True, name='vrchat-ogb-enabled',
+        )
+        self.heartbeat_thread.start()
         self.refresh_event.set()
+
+    def _ogb_heartbeat(self):
+        # Independent of Chatbox, device pairing and the output pause switch.
+        # Do not send false on exit: another OGB-compatible app may be running.
+        while not self.stop_event.wait(OGB_ENABLED_INTERVAL):
+            self.send_ogb_enabled()
+
+    def send_ogb_enabled(self):
+        with self.lock:
+            endpoint = self.last_fingerprint[0] if self.last_fingerprint else ''
+        if (self.stop_event.is_set() or not endpoint or not self.last_query_success
+                or time.perf_counter() - self.last_query_success >= 5):
+            return False
+        try:
+            # The OSCQuery HTTP port is NOT VRChat's OSC receiving port.
+            # Resolve HOST_INFO every heartbeat to follow game restarts/changes.
+            with self.opener.open(f'{endpoint}/?HOST_INFO', timeout=self.request_timeout) as response:
+                payload = response.read(65537)
+            if len(payload) > 65536:
+                raise ValueError('VRChat HOST_INFO 超过 64 KiB。')
+            info = json.loads(payload.decode('utf-8'))
+            port = _node_member(info, 'OSC_PORT')
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError('VRChat HOST_INFO 没有有效的 OSC_PORT。')
+            if _node_member(info, 'OSC_TRANSPORT', 'UDP') != 'UDP':
+                raise ValueError('VRChat OSC 接收端不是 UDP。')
+            host = _node_member(info, 'OSC_IP') or urlsplit(endpoint).hostname
+            if ipaddress.ip_address(host).is_unspecified:
+                host = urlsplit(endpoint).hostname
+            with self.lock:
+                current_endpoint = self.last_fingerprint[0] if self.last_fingerprint else ''
+            if (self.stop_event.is_set() or current_endpoint != endpoint
+                    or time.perf_counter() - self.last_query_success >= 5):
+                return False
+            client = SimpleUDPClient(host, port)
+            try:
+                client.send_message(OGB_ENABLED_ADDRESS, True)
+            finally:
+                client._sock.close()
+            if self.last_ogb_destination != (host, port):
+                logger.info('OGB_ENABLED=true，每 5 秒发送到 {}:{}。', host, port)
+                self.last_ogb_destination = (host, port)
+            return True
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning('发送 OGB_ENABLED 失败，稍后重试：{}', exc)
+            return False
 
     def _service_changed(self, zeroconf, service_type, name, state_change):
         with self.lock:
@@ -147,16 +210,61 @@ class VRChatOSCQueryClient:
         endpoint = f'http://{host}:{port}'
         observed_at = time.perf_counter()
         try:
-            with self.opener.open(f'{endpoint}/avatar', timeout=self.request_timeout) as response:
-                payload = response.read(4 * 1024 * 1024 + 1)
-            if len(payload) > 4 * 1024 * 1024:
-                raise ValueError('OSCQuery /avatar 响应超过 4 MiB。')
-            return parse_vrchat_avatar_node(json.loads(payload.decode('utf-8')), endpoint, observed_at)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            document = None
+            if endpoint not in self.split_endpoints:
+                try:
+                    document = self._read_json(f'{endpoint}/avatar')
+                except (OSError, ValueError, UnicodeError, HTTPException):
+                    self.split_endpoints.add(endpoint)
+            if document is None or parse_vrchat_avatar_node(document) is None:
+                document = self._read_avatar_parts(endpoint)
+            from srv.diagnostics import record_latency
+            record_latency('oscquery.http_fetch', observed_at)
+            return parse_vrchat_avatar_node(document, endpoint, observed_at)
+        except (OSError, ValueError, TypeError, UnicodeError, HTTPException) as exc:
             logger.debug('OSCQuery 查询 {} 失败：{}', endpoint, exc)
             return None
 
+    def _read_json(self, url):
+        with self.opener.open(url, timeout=self.request_timeout) as response:
+            payload = response.read(4 * 1024 * 1024 + 1)
+        if len(payload) > 4 * 1024 * 1024:
+            raise ValueError('OSCQuery 响应超过 4 MiB。')
+        return json.loads(payload.decode('utf-8-sig'))
+
+    def _read_avatar_parts(self, endpoint):
+        def identity(node):
+            value = _node_member(node, 'VALUE', [])
+            return value[0] if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str) else None
+        for _ in range(2):
+            if self.stop_event.is_set():
+                raise OSError('OSCQuery 已停止。')
+            # Identity may be hidden on locked avatars; do not require an ID
+            # to read a valid live parameter tree, but reject known ID changes.
+            try:
+                before = self._read_json(f'{endpoint}/avatar/change')
+            except (OSError, ValueError, HTTPException):
+                before = {}
+            parameters = self._read_json(f'{endpoint}/avatar/parameters')
+            if (_node_member(parameters, 'FULL_PATH') != '/avatar/parameters'
+                    or not isinstance(_node_member(parameters, 'CONTENTS'), dict)):
+                raise ValueError('OSCQuery 参数节点无效。')
+            try:
+                after = self._read_json(f'{endpoint}/avatar/change')
+            except (OSError, ValueError, HTTPException):
+                after = {}
+            if identity(before) != identity(after):
+                continue
+            return {'CONTENTS': {'change': after, 'parameters': parameters}}
+        raise ValueError('读取 OSCQuery 期间 Avatar 已切换，稍后重试。')
+
     def _query_services(self):
+        attempted = set()
+        if self.cached_endpoint is not None:
+            attempted.add(self.cached_endpoint)
+            snapshot = self._fetch(*self.cached_endpoint)
+            if snapshot is not None:
+                return snapshot
         with self.lock:
             # Like VRCFT, resolve the game, not another receiver's parameter tree.
             names = sorted(name for name in self.service_names
@@ -178,9 +286,44 @@ class VRChatOSCQueryClient:
             for address in info.parsed_addresses():
                 if self.stop_event.is_set():
                     return None
-                snapshot = self._fetch(address, info.port)
+                candidate = (address, info.port)
+                if candidate in attempted:
+                    continue
+                attempted.add(candidate)
+                snapshot = self._fetch(*candidate)
                 if snapshot is not None:
+                    self.cached_endpoint = candidate
                     return snapshot
+        # Bounded, read-only fallback when Windows mDNS is unavailable.
+        now = time.monotonic()
+        if now - self.last_log_probe >= 5:
+            self.last_log_probe = now
+            candidate = self._endpoint_from_game_log()
+            if candidate and candidate not in attempted:
+                snapshot = self._fetch(*candidate)
+                if snapshot is not None:
+                    self.cached_endpoint = candidate
+                    return snapshot
+        return None
+
+    def _endpoint_from_game_log(self):
+        root = Path(os.environ.get('USERPROFILE', '')) / 'AppData/LocalLow/VRChat/VRChat'
+        try:
+            logs = list(root.glob('output_log_*.txt'))
+            if not logs:
+                return None
+            newest = max(logs, key=lambda path: path.stat().st_mtime)
+            with newest.open('rb') as stream:
+                stream.seek(max(0, newest.stat().st_size - 262144))
+                ports = re.findall(rb'of type OSCQuery on (\d+)', stream.read(262144))
+            if not ports or not 1 <= int(ports[-1]) <= 65535:
+                return None
+            port = int(ports[-1])
+            info = self._read_json(f'http://127.0.0.1:{port}/?HOST_INFO')
+            if str(_node_member(info, 'NAME', '')).startswith('VRChat-Client'):
+                return '127.0.0.1', port
+        except (OSError, ValueError, TypeError, HTTPException):
+            pass
         return None
 
     def _publish(self, snapshot):
@@ -204,8 +347,13 @@ class VRChatOSCQueryClient:
             self.refresh_event.clear()
             if self.stop_event.is_set():
                 break
-            snapshot = self._query_services()
+            try:
+                snapshot = self._query_services()
+            except Exception as exc:
+                logger.warning('OSCQuery 读取暂时失败，将重试：{}', exc)
+                snapshot = None
             if snapshot is not None:
+                self.last_query_success = time.perf_counter()
                 with self.lock:
                     self.fallback_avatar_id = None
                 self._publish(snapshot)
@@ -215,10 +363,21 @@ class VRChatOSCQueryClient:
                 self.fallback_avatar_id = None
             if fallback_avatar_id:
                 self._publish(OSCQueryAvatarSnapshot(fallback_avatar_id, ()))
+            self._publish_disconnection_if_stale()
+
+    def _publish_disconnection_if_stale(self, now=None):
+        now = time.perf_counter() if now is None else now
+        if self.last_query_success and now - self.last_query_success >= 5:
+            self.last_query_success = 0
+            logger.warning('VRChat OSCQuery 已失联，清除旧模型触发；等待重新读取。')
+            self._publish(OSCQueryAvatarSnapshot('', (), numeric_parameter_paths=(), observed_at=now))
 
     def stop(self):
         self.stop_event.set()
         self.refresh_event.set()
+        if self.heartbeat_thread is not None:
+            self.heartbeat_thread.join(timeout=self.request_timeout + 1)
+            self.heartbeat_thread = None
         if self.browser is not None:
             self.browser.cancel()
             self.browser = None

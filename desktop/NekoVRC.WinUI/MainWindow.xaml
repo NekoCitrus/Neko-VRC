@@ -43,7 +43,6 @@
        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
        <TextBlock x:Name="ServiceStatus" Text="{Binding StatusLine}" HorizontalAlignment="Right" VerticalAlignment="Center" TextAlignment="Right" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding StatusLine}"/>
        <StackPanel x:Name="GlobalActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-        <Button Content="保存并应用" Command="{Binding SaveCommand}" Style="{StaticResource AccentButtonStyle}"/>
         <Button x:Name="PauseButton" Content="暂停" Command="{Binding StopCommand}"/>
         <Button Content="恢复" Command="{Binding ResumeCommand}"/>
        </StackPanel>

@@ -4,6 +4,7 @@ import errno
 import hmac
 import ipaddress
 import json
+import os
 import socket
 import sys
 import time
@@ -55,6 +56,7 @@ SETTINGS_BASIC = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
 CONFIG_MANAGER = None
 CONFIG_FILENAME = None
 CONFIG_FILENAME_BASIC = None
+RUN_LOG_PATH = None
 SERVER_IP = '127.0.0.1'
 ACTIVE_CONTROLLER = None
 RFC1918_NETWORKS = tuple(
@@ -348,6 +350,18 @@ def normalize_wave_request(channel, repeat, wavedata):
 
 
 async def broadcast_repeated_wave(channels, repeat, wavedata):
+    runtime = getattr(ACTIVE_CONTROLLER, 'runtime', None)
+    if runtime is not None:
+        if runtime.router.config('coyote')['mode'] == 'bluetooth':
+            # BLE consumes one 100 ms frame at a time, not an App batch.
+            for _ in range(repeat):
+                for channel in channels:
+                    await runtime.router.broadcast_wave(channel, json.dumps([wavedata]), 'coyote')
+                await asyncio.sleep(0.1)
+        else:
+            for channel in channels:
+                await runtime.router.broadcast_wave(channel, json.dumps([wavedata] * repeat), 'coyote')
+        return
     wavestr = json.dumps([wavedata] * repeat, separators=(',', ':'))
     for channel in channels:
         await DGConnection.broadcast_wave(
@@ -460,29 +474,37 @@ class DeviceRuntime:
         return dispatcher
 
     async def _apply_settings(self, settings):
+        if settings == self.settings:
+            return
         old_chatbox = self.chatbox_manager
         # Stop the OLD route before changing its selection. Keep App and OSC
         # sockets intact while clearing pending samples in both transports.
         for kind in ('coyote', 'opossum'):
-            for channel in ('A', 'B'):
-                await self.router.broadcast_clear_wave(channel, kind)
+            if self.router.config(kind) != settings['connections'][kind]:
+                for channel in ('A', 'B'):
+                    await self.router.broadcast_clear_wave(channel, kind)
         for handler in self.handlers:
             if not isinstance(handler, ShockHandler):
                 continue
-            for address, binding in handler.osc_bindings():
-                self.dispatcher.unmap(address, handler.osc_handler, binding)
+            next_config = settings['dglab3'][handler.device_kind][f'channel_{handler.channel.lower()}']
+            if handler.shock_settings != next_config:
+                for address, binding in handler.osc_bindings():
+                    self.dispatcher.unmap(address, handler.osc_handler, binding)
 
         self.settings = settings
-        self.chatbox_manager = AdvancedChatboxManager(settings)
+        if old_chatbox.settings != settings['chatbox']:
+            self.chatbox_manager = AdvancedChatboxManager(settings)
         for handler in self.handlers:
             if not isinstance(handler, ShockHandler):
                 continue
             channel_key = f'channel_{handler.channel.lower()}'
-            await handler.reconfigure(settings['dglab3'][handler.device_kind][channel_key])
+            next_config = settings['dglab3'][handler.device_kind][channel_key]
+            if handler.shock_settings != next_config:
+                await handler.hot_update(next_config)
+                for address, binding in handler.osc_bindings():
+                    self.dispatcher.map(address, handler.osc_handler, binding)
             handler.SETTINGS = settings
             handler.set_chatbox_manager(self.chatbox_manager)
-            for address, binding in handler.osc_bindings():
-                self.dispatcher.map(address, handler.osc_handler, binding)
 
         for connection in srv.get_ws_connections():
             apply_connection_settings = getattr(connection, 'apply_settings', None)
@@ -491,7 +513,7 @@ class DeviceRuntime:
         await self.router.apply_settings(settings)
         if self.oscquery is not None:
             self.oscquery.settings = settings
-        if old_chatbox is not None:
+        if old_chatbox is not None and old_chatbox is not self.chatbox_manager:
             same_endpoint = all(
                 old_chatbox.settings.get(key, default) == self.chatbox_manager.settings.get(key, default)
                 for key, default in (('osc_host', '127.0.0.1'), ('osc_port', 9000))
@@ -711,6 +733,11 @@ class DeviceRuntime:
                 logger.warning('已拒绝配对路径无效的 WebSocket 连接。')
                 return
             client = DGConnection(connection, SETTINGS=self.settings)
+        # Match BLE connect/resume: an App must not replay inputs cached before
+        # pairing. Fresh OSC/OSCQuery values can re-arm only its own routes.
+        for handler in self.handlers:
+            if isinstance(handler, ShockHandler) and self.router.config(handler.device_kind)['mode'] == 'app':
+                handler.reset_for_avatar_change()
         self._emit({
             'type': 'device',
             'connected': False,
@@ -729,11 +756,32 @@ class DeviceRuntime:
             )
             await asyncio.sleep(0.5)
 
+    async def _diagnostics_task(self):
+        previous = {}
+        while True:
+            snapshot = self.snapshot()
+            for kind, channels in snapshot['device_channels'].items():
+                for channel, info in channels.items():
+                    key = kind, channel
+                    hosts = info['device_strengths']
+                    values = (round(info['calculated_strength'], 2), info['actual_strength'], tuple(
+                        (item['slot_id'], item['calculated_strength'], item['actual_strength']) for item in hosts),
+                        round(info['strength_percentage'], 4))
+                    if values != previous.get(key):
+                        logger.bind(strength_event=True, device_kind=kind, channel=channel,
+                                    calculated=values[0], actual=values[1], strength_hosts=hosts).info(
+                            '计算强度 device={} channel={} calculated={:.2f} actual={} ratio={:.4f} source={} cap={} paused={} hosts={}',
+                            kind, channel, values[0], values[1], info['strength_percentage'], info['trigger_type'],
+                            info['upper_strength'], snapshot['output_paused'], hosts)
+                        previous[key] = values
+            await asyncio.sleep(0.2)
+
     async def _main(self):
         self.loop = asyncio.get_running_loop()
         self.stop_event = asyncio.Event()
         osc_transport = None
         chatbox_task = None
+        diagnostics_task = None
         try:
             dispatcher = self._build_dispatcher()
             self.dispatcher = dispatcher
@@ -742,6 +790,7 @@ class DeviceRuntime:
                 if start:
                     start()
             chatbox_task = asyncio.create_task(self._chatbox_task())
+            diagnostics_task = asyncio.create_task(self._diagnostics_task())
 
             osc_address = (self.settings['osc']['listen_host'], self.settings['osc']['listen_port'])
             osc_server = AsyncIOOSCUDPServer(osc_address, dispatcher, self.loop)
@@ -779,6 +828,9 @@ class DeviceRuntime:
             self._emit({'type': 'service', 'state': 'error', 'message': str(exc)})
             logger.error(traceback.format_exc())
         finally:
+            if diagnostics_task is not None:
+                diagnostics_task.cancel()
+                await asyncio.gather(diagnostics_task, return_exceptions=True)
             if chatbox_task is not None:
                 chatbox_task.cancel()
                 await asyncio.gather(chatbox_task, return_exceptions=True)
@@ -850,15 +902,18 @@ class DeviceRuntime:
                 device_strengths.append({
                     'slot_id': state['slot_id'],
                     'device_name': state['device_name'],
-                    'actual_strength': int(state['strength'].get(handler.channel, 0)),
+                    'communication_latency': state.get('communication_latency'),
+                    'actual_strength': state.get('reported_strength', state['strength']).get(handler.channel),
                     'upper_strength': int(state['upper_strength'].get(handler.channel, 0)),
+                    'calculated_strength': (0.0 if self.router.paused else round(info['strength_percentage'] * int(state['upper_strength'].get(handler.channel, 0)), 2)),
                 })
-            primary = next(iter(device_strengths), {'actual_strength': 0, 'upper_strength': 0})
+            primary = next(iter(device_strengths), {'actual_strength': None, 'upper_strength': 0})
             device_channels[handler.device_kind][handler.channel] = {
                 **info,
                 'actual_strength': primary['actual_strength'],
                 'upper_strength': primary['upper_strength'],
                 'device_strengths': device_strengths,
+                'calculated_strength': max((item['calculated_strength'] for item in device_strengths), default=0.0),
             }
         # Keep the original key as a compatibility view for API consumers.
         channels = device_channels['coyote']
@@ -984,16 +1039,39 @@ class ConfigFileInited(Exception):
     """Kept for source compatibility with v0.2 integrations."""
 
 
-def config_init(config_dir=None):
-    global CONFIG_MANAGER, CONFIG_FILENAME, CONFIG_FILENAME_BASIC, SETTINGS, SETTINGS_BASIC, SERVER_IP
+def config_init(config_dir=None, log_dir=None):
+    global CONFIG_MANAGER, CONFIG_FILENAME, CONFIG_FILENAME_BASIC, SETTINGS, SETTINGS_BASIC, SERVER_IP, RUN_LOG_PATH
     CONFIG_MANAGER = ConfigManager(APP_DIR, config_dir=config_dir)
     SETTINGS, SETTINGS_BASIC = CONFIG_MANAGER.load()
     CONFIG_FILENAME = CONFIG_MANAGER.path
     CONFIG_FILENAME_BASIC = CONFIG_MANAGER.path
     SERVER_IP = SETTINGS.get('SERVER_IP') or detect_current_ip(SETTINGS)
     logger.remove()
-    log_path = CONFIG_MANAGER.config_dir / 'neko-vrc.log'
-    logger.add(log_path, level=SETTINGS.get('log_level', 'INFO'), rotation='2 MB', retention=3, encoding='utf-8')
+    from srv.diagnostics import brand_log_record
+    logger.configure(patcher=brand_log_record)
+    from datetime import datetime
+    program_dir = Path(APP_DIR)
+    if getattr(sys, 'frozen', False) and program_dir.name.lower() == 'backend':
+        program_dir = program_dir.parent
+    preferred = Path(log_dir) if log_dir is not None else (Path(config_dir) if config_dir is not None else program_dir) / 'log'
+    fallback = CONFIG_MANAGER.config_dir / 'log'
+    filename = f'neko-vrc-{datetime.now():%Y%m%d-%H%M%S-%f}-{os.getpid()}.log'
+    file_level = SETTINGS['log_level'] if SETTINGS.get('log_level') in ('TRACE', 'DEBUG') else 'INFO'
+    log_error = None
+    for destination in dict.fromkeys((preferred, fallback)):
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            candidate = destination / filename
+            logger.add(candidate, level=file_level, rotation='20 MB', encoding='utf-8')
+            RUN_LOG_PATH = candidate.resolve()
+            break
+        except OSError as exc:
+            log_error = exc
+    else:
+        raise OSError('无法创建运行日志。') from log_error
+    if log_error is not None:
+        logger.warning('程序目录日志不可写，已回退：{}（{}）', RUN_LOG_PATH, log_error)
+    logger.info('运行日志：{}', RUN_LOG_PATH)
     if sys.stderr is not None:
         logger.add(sys.stderr, level=SETTINGS.get('log_level', 'INFO'))
     return SETTINGS, SETTINGS_BASIC

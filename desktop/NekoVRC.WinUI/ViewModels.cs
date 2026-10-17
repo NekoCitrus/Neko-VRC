@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
+using System.Threading;
 using System.Windows.Input;
 
 using BackendClient = NekoVRC.Desktop.BackendClient;
@@ -16,7 +17,7 @@ public class Observable : INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
     protected void Changed([CallerMemberName] string? property = null) => PropertyChanged?.Invoke(this, new(property));
-    protected void Set<T>(ref T field, T value, [CallerMemberName] string? property = null) { field = value; Changed(property); }
+    protected void Set<T>(ref T field, T value, [CallerMemberName] string? property = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return; field = value; Changed(property); }
 }
 
 public sealed class Command : ICommand
@@ -90,10 +91,17 @@ public sealed class ChannelViewModel : Observable
     public ObservableCollection<Zone> PlugZones { get; } = new();
     public IReadOnlyList<string> Waveforms { get; }
     public IReadOnlyList<Zone> WaveformChoices { get; }
+    public bool IsUpdatingZones { get; private set; }
     private string _debug = "无输出";
     public string Debug { get => _debug; set => Set(ref _debug, value); }
     private string _parameterHint = "等待读取模型 OSC 参数";
     public string ParameterHint { get => _parameterHint; set => Set(ref _parameterHint, value); }
+    private double _calculatedStrength;
+    public double CalculatedStrength { get => _calculatedStrength; set { Set(ref _calculatedStrength, value); Changed(nameof(StrengthTooltip)); Changed(nameof(CalculatedFraction)); } }
+    public double CalculatedFraction => Math.Clamp(CalculatedStrength / 200, 0, 1);
+    public string StrengthTooltip => $"计算强度 {CalculatedStrength:0.##} / 软件上限 {Limit}（非波形瞬时幅值）";
+    private string _triggerLabel = "未触发";
+    public string TriggerLabel { get => _triggerLabel; set => Set(ref _triggerLabel, value); }
 
     public ChannelViewModel(string name, string kind, JsonObject basic, JsonObject runtime, JsonArray waveforms)
     {
@@ -114,6 +122,8 @@ public sealed class ChannelViewModel : Observable
 
     public void UpdateZones(JsonArray? sockets, JsonArray? plugs)
     {
+        IsUpdatingZones = true;
+        try {
         static void Populate(ObservableCollection<Zone> items, string selected, JsonArray? zones) {
             var next = new List<Zone> { new("*", "任何正在触发的部位") };
             if (zones != null) foreach (JsonNode? zone in zones) {
@@ -129,6 +139,7 @@ public sealed class ChannelViewModel : Observable
         string socket = SocketZone, plug = PlugZone;
         Populate(SocketZones, socket, sockets); Populate(PlugZones, plug, plugs);
         SocketZone = socket; PlugZone = plug; Changed(nameof(SocketZone)); Changed(nameof(PlugZone));
+        } finally { IsUpdatingZones = false; }
     }
 
     public (JsonObject basic, JsonObject runtime) Export()
@@ -154,6 +165,7 @@ public sealed class DeviceViewModel : Observable
     public string Mode { get => _mode; set { if (ConnectionModes.Any(mode => mode.Id == value)) Set(ref _mode, value); } }
     public string Address { get => _address; set => Set(ref _address, value); }
     public string Model { get => _model; set => Set(ref _model, value); }
+    public bool HasBluetoothConnection { get; set; }
     public ObservableCollection<BluetoothDevice> Devices { get; } = new();
     public ObservableCollection<ChannelViewModel> Channels { get; } = new();
     private BluetoothDevice? _selected;
@@ -162,7 +174,7 @@ public sealed class DeviceViewModel : Observable
         // still-valid choice; a real scan clearing Devices can still clear it.
         if (value == null && _selected != null && Devices.Contains(_selected)) return;
         _selected = value;
-        if (value != null) { Address = value.Address; Model = value.Model; Changed(nameof(Address)); }
+        if (value != null) { Address = value.Address; Model = value.Model; }
         Changed();
     } }
     private string _status = "未连接";
@@ -177,7 +189,7 @@ public sealed class DeviceViewModel : Observable
     public DeviceViewModel(string kind, MainViewModel owner, JsonObject config)
     {
         Kind = kind; Name = kind == "coyote" ? "郊狼" : "负鼠";
-        QrCommand = owner.QrCommand;
+        QrCommand = new Command(_ => owner.Run(() => owner.ShowQrAsync(Kind)), () => owner.Ready && !owner.Busy);
         Mode = config["mode"]?.GetValue<string>() ?? "bluetooth";
         Address = config["address"]!.GetValue<string>(); Model = config["model"]!.GetValue<string>();
         ScanCommand = new Command(_ => owner.Run(() => owner.ScanAsync(this)), () => !owner.Busy);
@@ -198,6 +210,8 @@ public sealed class DeviceViewModel : Observable
                 if (item!["device_kind"]!.GetValue<string>() == Kind)
                     Devices.Add(new(item["address"]!.GetValue<string>(), item["name"]!.GetValue<string>(), item["model"]!.GetValue<string>(), Kind));
             }
+            if (HasBluetoothConnection && Devices.All(d => d.Address != Address))
+                Devices.Insert(0, new(Address, "已连接设备", Model, Kind));
             SelectedDevice = Devices.FirstOrDefault(d => d.Address == Address) ?? Devices.FirstOrDefault();
             ScanStatus = Devices.Count == 0 ? "未找到设备，请释放手机蓝牙连接并开启广播。" : $"扫描完成，找到 {Devices.Count} 台设备";
         }
@@ -223,7 +237,12 @@ public sealed class MainViewModel : Observable
         new Credit("Bleak", "https://github.com/hbldh/bleak"),
     };
     private readonly BackendClient _client;
+    private readonly SemaphoreSlim _applyGate = new(1);
+    private CancellationTokenSource? _applyDelay;
+    private bool _applyRequested;
+    public Task PendingApplyTask { get; private set; } = Task.CompletedTask;
     private JsonObject _settings = new(), _basic = new();
+    private JsonObject _appliedSettings = new(), _appliedBasic = new();
     private string _page = "general", _status = "连接后台…", _avatar = "尚未读取 Avatar", _logs = "";
     private bool _busy, _ready;
     public bool Busy { get => _busy; private set { Set(ref _busy, value); Command.Requery(); } }
@@ -265,7 +284,6 @@ public sealed class MainViewModel : Observable
     public bool IsAbout => _page == "about";
     public string ConfigPath { get; private set; } = "";
     public ICommand PageCommand { get; }
-    public ICommand SaveCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand ResumeCommand { get; }
     public event Action<JsonArray>? QrReady;
@@ -276,12 +294,42 @@ public sealed class MainViewModel : Observable
     {
         _client = client;
         PageCommand = new Command(p => SelectPage(p?.ToString() ?? "general"));
-        SaveCommand = new Command(_ => Run(SaveAsync), () => Ready && !Busy);
         StopCommand = new Command(_ => { _client.EmergencyStop(); Status = "正在暂停…"; }, () => Ready);
         ResumeCommand = new Command(_ => Run(() => DeviceActionAsync("resume")), () => Ready && !Busy);
-        QrCommand = new Command(_ => Run(async () => {
-            var response = await _client.CallAsync("qr"); QrReady?.Invoke(response["data"]!["matrix"]!.AsArray());
-        }), () => Ready && !Busy);
+        QrCommand = new Command(_ => Run(() => ShowQrAsync()), () => Ready && !Busy);
+        PropertyChanged += (_, e) => { if (e.PropertyName is nameof(Background) or nameof(SteamVR) or nameof(Chatbox)) ScheduleApply(); };
+    }
+
+    public async Task ShowQrAsync(string? kind = null)
+    {
+        foreach (var device in Devices.Where(d => kind == null ? !d.HasBluetoothConnection : d.Kind == kind)) device.Mode = "app";
+        await SaveAsync();
+        var response = await _client.CallAsync("qr"); QrReady?.Invoke(response["data"]!["matrix"]!.AsArray());
+    }
+
+    private void ScheduleApply()
+    {
+        if (!Ready) return;
+        _applyRequested = true;
+        if (!PendingApplyTask.IsCompleted && _applyDelay is { IsCancellationRequested: false }) return;
+        _applyDelay?.Dispose();
+        _applyDelay = new CancellationTokenSource();
+        PendingApplyTask = ApplyAfterEditAsync(_applyDelay.Token);
+    }
+    private async Task ApplyAfterEditAsync(CancellationToken token)
+    {
+        while (_applyRequested && !token.IsCancellationRequested) {
+            _applyRequested = false;
+            try { await Task.Delay(120, token); await SaveAsync(); OperationError?.Invoke(""); }
+            catch (OperationCanceledException) { return; }
+            catch (Exception exc) { OperationError?.Invoke("未应用：" + exc.Message); }
+        }
+    }
+    public async Task FlushSettingsAsync()
+    {
+        _applyDelay?.Cancel();
+        _applyRequested = false;
+        await SaveAsync();
     }
 
     public void SelectPage(string page)
@@ -295,6 +343,7 @@ public sealed class MainViewModel : Observable
         var response = await _client.CallAsync("init");
         var data = response["data"]!.AsObject();
         _settings = (JsonObject)data["settings"]!.DeepClone(); _basic = (JsonObject)data["basic"]!.DeepClone();
+        _appliedSettings = (JsonObject)_settings.DeepClone(); _appliedBasic = (JsonObject)_basic.DeepClone();
         Background = _settings["general"]!["run_in_background"]!.GetValue<bool>();
         SteamVR = _settings["general"]!["steamvr_auto_start"]!.GetValue<bool>();
         Chatbox = _settings["chatbox"]!["enable"]!.GetValue<bool>();
@@ -309,6 +358,13 @@ public sealed class MainViewModel : Observable
             Devices.Add(device);
         }
         Ready = true; Status = "后台已连接";
+        foreach (var device in Devices) {
+            device.PropertyChanged += (_, e) => { if (e.PropertyName is nameof(DeviceViewModel.Mode) or nameof(DeviceViewModel.Address) or nameof(DeviceViewModel.Model)) ScheduleApply(); };
+            foreach (var channel in device.Channels) channel.PropertyChanged += (_, e) => {
+                if (channel.IsUpdatingZones) return;
+                if (e.PropertyName is nameof(ChannelViewModel.SocketEnabled) or nameof(ChannelViewModel.PlugEnabled) or nameof(ChannelViewModel.PcsEnabled) or nameof(ChannelViewModel.LmsEnabled) or nameof(ChannelViewModel.ExtraEnabled) or nameof(ChannelViewModel.SocketZone) or nameof(ChannelViewModel.PlugZone) or nameof(ChannelViewModel.Limit) or nameof(ChannelViewModel.Waveform) or nameof(ChannelViewModel.ExtraPaths)) ScheduleApply();
+            };
+        }
         foreach (string p in new[] { nameof(Background), nameof(SteamVR), nameof(Chatbox), nameof(CurrentDevice) }) Changed(p);
         Command.Requery();
     }
@@ -325,6 +381,8 @@ public sealed class MainViewModel : Observable
     public async Task SaveAsync()
     {
         await ThemeSaveTask;
+        await _applyGate.WaitAsync();
+        try {
         var settings = (JsonObject)_settings.DeepClone(); var basic = (JsonObject)_basic.DeepClone();
         settings["general"]!["run_in_background"] = Background;
         settings["general"]!["steamvr_auto_start"] = SteamVR;
@@ -340,8 +398,11 @@ public sealed class MainViewModel : Observable
                 settings["dglab3"]![device.Kind]![channel.Key] = exported.runtime;
             }
         }
-        await _client.CallAsync("save", new() { ["settings"] = settings, ["basic"] = basic });
-        _settings = settings; _settings["general"]!["theme"] = Theme; _basic = basic; Status = "已保存并应用";
+        if (!JsonNode.DeepEquals(settings, _appliedSettings) || !JsonNode.DeepEquals(basic, _appliedBasic))
+            await _client.CallAsync("save", new() { ["settings"] = settings, ["basic"] = basic });
+        _appliedSettings = (JsonObject)settings.DeepClone(); _appliedBasic = (JsonObject)basic.DeepClone();
+        _settings = settings; _settings["general"]!["theme"] = Theme; _basic = basic;
+        } finally { _applyGate.Release(); }
     }
 
     public async Task DeviceActionAsync(string action, string? kind = null)
@@ -377,9 +438,10 @@ public sealed class MainViewModel : Observable
         Logs = string.Join(Environment.NewLine, data["logs"]?.AsArray().Select(x => x!.GetValue<string>()) ?? Array.Empty<string>());
         foreach (var device in Devices) {
             var hosts = runtime?["devices"]?.AsArray().Where(x => x?["device_kind"]?.GetValue<string>() == device.Kind).ToArray() ?? Array.Empty<JsonNode?>();
+            device.HasBluetoothConnection = hosts.Any(x => x?["transport"]?.GetValue<string>() == "bluetooth");
             device.Status = hosts.Length == 0 ? "未连接" : string.Join(" / ", hosts.Select(x =>
                 (x?["transport"]?.GetValue<string>() == "bluetooth" ? "蓝牙" : "App") + " · " + x?["device_name"]?.GetValue<string>() +
-                (x?["battery"] != null ? " · 电量 " + x["battery"] + "%" : "")));
+                (x?["battery"] != null ? " · 电量 " + x["battery"] + "%" : "") + " · " + FormatCommunicationLatency(x?["communication_latency"])));
             var ble = runtime?["bluetooth"]?[device.Kind];
             if (hosts.Length == 0 && ble?["error"] != null) device.Status = ble["error"]!.GetValue<string>();
             foreach (var channel in device.Channels) {
@@ -390,9 +452,23 @@ public sealed class MainViewModel : Observable
                 string samples = info?["sent_strengths"]?.ToJsonString() ?? "[0,0,0,0]";
                 string source = info?["trigger_type"]?.GetValue<string>() ?? "—";
                 source = source switch { "sps_socket" => "插座深度", "sps_plug" => "插头深度", _ => source };
+                channel.CalculatedStrength = info?["calculated_strength"]?.GetValue<double>() ?? 0;
+                string trigger = source switch { "extra" => "自定义参数", "map" => "地图事件", "pcs" => "PCS 回退", "lms" => "LMS 回退", "—" or "" => "未触发", _ => source };
+                channel.TriggerLabel = paused ? "已暂停" : percent > 0 ? $"{trigger} · 计算 {channel.CalculatedStrength:0.##}" : "未触发";
                 channel.Debug = $"触发：{source}　比例：{percent:P0}\n已发送波形幅值：{samples}　有效上限：{info?["upper_strength"] ?? JsonValue.Create(0)}\n设备反馈强度：{info?["actual_strength"] ?? JsonValue.Create(0)}";
             }
         }
+    }
+
+    internal static string FormatCommunicationLatency(JsonNode? latency)
+    {
+        if (latency?["milliseconds"] is not JsonValue sample || !sample.TryGetValue<double>(out double milliseconds) || !double.IsFinite(milliseconds) || milliseconds < 0)
+            return "通信延迟：暂无数据";
+        string? label = latency["kind"]?.GetValue<string>() switch {
+            "app_ack" => "App 确认往返", "app_ping" => "App 往返",
+            "ble_write_response" => "蓝牙写入", "ble_write_enqueue" => "蓝牙入队", _ => null,
+        };
+        return label == null ? "通信延迟：暂无数据" : $"{label} {milliseconds:0.##} ms";
     }
 
     public void PrepareSmokePorts(int ws, int web, int query, int osc)

@@ -136,10 +136,10 @@ class ShockHandler(BaseHandler):
         paths = set()
         # Actual validated OSC/OSCQuery values are evidence, even before discovery
         # completes or if an avatar unlocks between OSCQuery polls.
-        for (trigger_type, zone), calculator in self.calculators.items():
+        for (trigger_type, zone), calculator in tuple(self.calculators.items()):
             if trigger_type == SPS_SOCKET:
                 paths.update(f'{OGB_PARAMETER_PREFIX}Orf/{zone}/{signal}'
-                             for signal in calculator.values)
+                             for signal in tuple(calculator.values))
         return has_socket_depth_parameters(paths, self.socket_zone)
 
     @property
@@ -191,6 +191,8 @@ class ShockHandler(BaseHandler):
                 for signal in tuple(calculator.values):
                     if f'{OGB_PARAMETER_PREFIX}{ogb_kind}/{zone}/{signal}' not in paths:
                         calculator.forget(signal)
+                if trigger_type == SPS_SOCKET:
+                    calculator.has_close_gate = f'{OGB_PARAMETER_PREFIX}Orf/{zone}/PenOthersClose' in paths
                 if not calculator.values:
                     self.calculators.pop(key)
                     self.calculator_inputs.pop(key, None)
@@ -249,6 +251,7 @@ class ShockHandler(BaseHandler):
         self._receive_value(address, binding, (value,), observed_at)
 
     def _receive_value(self, address, binding, args, query_observed_at=None):
+        started = time.perf_counter()
         try:
             source, signal = self._unwrap_binding(binding)
             value = self.param_sanitizer(args)
@@ -300,6 +303,8 @@ class ShockHandler(BaseHandler):
             calculator = self.calculators.setdefault(
                 (source, zone), SPSDepthCalculator(source),
             )
+            if source == SPS_SOCKET and self.avatar_parameter_paths is not None:
+                calculator.has_close_gate = f'{OGB_PARAMETER_PREFIX}Orf/{zone}/PenOthersClose' in self.avatar_parameter_paths
             calculator.update(signal, raw_value)
             self.calculator_inputs[(source, zone)] = (address, raw_value)
         if query_observed_at is None:
@@ -310,6 +315,8 @@ class ShockHandler(BaseHandler):
         winner = self._winner()
         self._set_winner(winner)
         self._track_task(self._apply_current_winner())
+        from srv.diagnostics import record_latency
+        record_latency('osc.compute_winner', started)
         return None
 
     def _distance_depth(self, raw_value):
@@ -392,6 +399,39 @@ class ShockHandler(BaseHandler):
         self._load_settings(channel_settings)
         self._set_winner((0.0, '', '', '', 0.0))
         await self._clear_output()
+
+    async def hot_update(self, channel_settings):
+        """Invalidate only the inputs whose meaning/routing actually changed."""
+        old = self.shock_settings
+        index, waveform = self.wave_frame_index, self.waveform
+        old_extra = self.extra_config
+        self._load_settings(channel_settings)
+        if waveform == self.waveform:
+            self.wave_frame_index = index
+        for kind, zone_key, needed in (
+            (SPS_SOCKET, 'socket_zone', self.socket_enabled or self.pcs_enabled),
+            (SPS_PLUG, 'plug_zone', self.plug_enabled or self.lms_enabled),
+        ):
+            if old[zone_key] != channel_settings[zone_key] or not needed:
+                for key in tuple(self.calculators):
+                    if key[0] == kind:
+                        self.calculators.pop(key, None)
+                        self.calculator_inputs.pop(key, None)
+        range_changed = any(old_extra[key] != self.extra_config[key] for key in ('bottom', 'top'))
+        if old_extra != self.extra_config:
+            self.extra_values.clear()
+        if not self.extra_config['enabled']:
+            self.map_event_until = 0
+        if range_changed or old.get('pcs_enabled') != channel_settings.get('pcs_enabled'):
+            self.pcs_value = None
+        if range_changed or old.get('lms_enabled') != channel_settings.get('lms_enabled'):
+            self.lms_value = None
+        winner = self._winner()
+        self._set_winner(winner)
+        if winner[0] > 0:
+            await self.handler_depth(winner[0])
+        else:
+            await self._clear_output()
 
     def reset_for_avatar_change(self, observed_at=None):
         self.calculators.clear()
@@ -530,9 +570,12 @@ class ShockHandler(BaseHandler):
             sent_frame = scale_coyote_frame(source_frame, current_strength)
             wave = json.dumps([sent_frame], separators=(',', ':'))
             last_strength = current_strength
+            started = time.perf_counter()
             delivered = await self.DG_CONN.broadcast_wave(
                 self.channel, wavestr=wave, device_kind=self.device_kind,
             )
+            from srv.diagnostics import record_latency
+            record_latency(f'output.{self.device_kind}.enqueue_or_send', started)
             if delivered is False:
                 continue
             self.last_sent_frame = sent_frame

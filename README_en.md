@@ -20,7 +20,7 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 1. Go to [Project Releases](https://github.com/NekoCitrus/Neko-VRC/releases) to download the latest Neko-VRC build.
 2. Extract the complete package and run `Neko-VRC.exe`. WinUI 3 follows the Windows light/dark theme and starts the backend automatically. Python, .NET and Windows App Runtime are bundled. Windows 11 supplies native rounded corners; Windows 10 uses the appearance supported by the OS.
 3. Under **Coyote settings** and **Opossum settings**, configure Socket, Plug, extra parameters, waveform, and strength limit for each channel.
-4. Select **Save and apply**. The existing APP connection stays connected.
+4. Edits apply and save automatically; continuous edits are coalesced about every 120 ms. Existing APP connections remain connected.
 5. Select **App** or **Bluetooth direct** separately for each device kind. New profiles default to Bluetooth direct; saved choices are preserved. App mode uses the existing Socket QR connection. For direct mode, release the phone's Bluetooth connection, scan, select a host, and connect.
 6. If background operation is enabled, closing the window hides it to the real Windows notification area. Use the tray menu to reopen or exit.
 
@@ -29,20 +29,22 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 - **General:** Light / Dark / System appearance (applied and saved immediately without Save), Chatbox, background operation, and SteamVR auto-start. OSCQuery lets VRChat discover the service without extra OSC relay software.
 - **Coyote settings:** independent A/B sources, waveform, and strength limit for each channel. The first choice, Pure (纯粹), is the new-profile default: a constant envelope follows the calculated ratio without preset modulation, retaining the required device pulse format and existing caps. Saved waveform choices are preserved.
 - **Opossum settings:** independent A/B sources, official Opossum waveform, and strength limit for each channel.
-- **Runtime Debug:** only printed logs in a resizable full-page text box. Connection and battery status remain on device settings pages.
+- **Runtime Debug:** only calculated and device-reported strengths for Coyote/Opossum channels. Unchanged values are not repeated, and new entries automatically scroll to the bottom. Missing device feedback is labeled explicitly. Connection and battery status remain on device settings pages.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
 Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
 
-Each channel groups triggers into three columns: depth/zone selectors, PCS/LMS fallbacks, and parameter/map events. Its integer strength cap uses a synchronized 0–200 slider without ticks or endpoint labels and a text input alongside a compact waveform selector. Device settings still require Save/Apply. Appearance changes save independently without restarting the service or applying other pending edits.
+Each channel groups triggers into depth/zone, PCS/LMS fallback, and parameter/map columns. Its 0–200 cap slider and input are synchronized. A thicker blue level inside the native Slider track shows calculated strength, not instantaneous waveform amplitudes or hardware feedback; the A/B heading shows the source and calculated value. For multiple matching hosts it shows the maximum calculated level under their individual caps. Paused/disconnected output shows zero.
+
+All editable settings apply/save automatically. Invalid text keeps the last valid configuration and displays an error; corrected input applies automatically. Cap/waveform edits preserve depth and trigger edits invalidate only affected inputs. Manual YAML changes still require reopening the application.
 
 Each device kind has exactly one selected output route. App/Bluetooth mixed operation is supported; direct mode connects one host per kind. Saving channel settings preserves connections; changing route or address clears the old output and requires a new manual Bluetooth connection. Pause stops output and is latched until Resume. A lost radio link cannot guarantee delivery of a zero command; use the host's physical stop controls.
 
-The window defaults to 940 × 648, with a DPI-scaled minimum size of 880 × 640. Save/Apply, Pause and Resume stay at the heading's right edge, with service status, parameter hint and Avatar name immediately to their left on the same row. Long names are trimmed with a full-text tooltip. The redundant window Exit button is removed. QR remains in General and the device connection cards; Scan/Connect/Disconnect stay in the device connection cards. The heading is 36 pixels high. Default collapsed device settings fit without scrolling and their bottom aligns with About/Copyright in the sidebar. Native page transitions and navigation indicator animations are retained. Each device page keeps its own device binding so its connection card and channels animate away together. Closing for exit hides the window immediately while device/network cleanup completes. When tray operation is enabled, closing still hides to the tray; its menu retains Exit.
+The window defaults to 940 × 640, with a DPI-scaled minimum of 880 × 640. Only Pause/Resume remain in the top toolbar, after status, parameter hint and Avatar name. There is no Save button. QR and connection actions stay in their original cards. Compact layout, native page transitions and navigation indicator animations are retained. Exiting hides the window immediately while valid settings flush and backend cleanup completes; close-to-tray behavior is preserved.
 
 ### Start with SteamVR
 
-The **Start with SteamVR** checkbox uses an OpenVR application manifest to enable or disable SteamVR auto-start. Start SteamVR before changing this option and selecting **Save and apply**. The manifest is stored under `%APPDATA%\Neko-VRC\steamvr\`.
+The **Start with SteamVR** checkbox uses an OpenVR application manifest. Start SteamVR before changing the option; it applies automatically. The manifest is stored under `%APPDATA%\Neko-VRC\steamvr\`.
 
 This feature does not use Windows login startup and does not launch or poll for SteamVR. SteamVR may require one restart when it first reads the new manifest; the UI reports this and completes setup on the next launch.
 
@@ -52,7 +54,13 @@ This feature does not use Windows login startup and does not launch or poll for 
 %APPDATA%\Neko-VRC\settings-v2.0.yaml
 ```
 
-The log is stored as `neko-vrc.log` in the same directory. If the new directory has no configuration, settings are migrated from the legacy `%APPDATA%\ShockingVRChat` directory without changing its files. All subsequent writes use Neko-VRC; an existing new configuration takes priority.
+Each launch creates a timestamped file in `log\` beside `Neko-VRC.exe` (the project directory when running from source), rotating at 20 MB without overwriting prior runs. If unwritable, it falls back to `%APPDATA%\Neko-VRC\log\`. Main-module entries are branded `neko-vrc`. Files retain connection errors and diagnostics; unchanged strengths no longer generate periodic entries. Debug displays strengths only. Logs retain at least INFO, including calculated and device-reported strengths, ratios, sources, caps and measured stage timings—not physical actuation or phone-to-device end-to-end latency. Sent targets are never presented as confirmed feedback. Legacy configuration is read-only migrated from `%APPDATA%\ShockingVRChat` when needed. Runtime user logs are excluded from release ZIPs without deleting local copies.
+
+While the service is running, an independent five-second heartbeat resolves VRChat's actual OSC destination through OSCQuery and sends the Boolean `/avatar/parameters/OGB_ENABLED=true`. It does not require Chatbox or a connected device. Shutdown stops the heartbeat without sending false, avoiding interference with other compatible apps.
+
+Each connection card displays its measured communication time: App V4 prefers a request acknowledgment RTT from the past 30 seconds, otherwise WebSocket Ping/Pong RTT (also available for V3). BLE displays GATT write duration, explicitly labeled enqueue time when write acknowledgments are unsupported. Missing samples show no data. These measurements exclude the App-to-host Bluetooth link and physical actuation.
+
+Direct Coyote V3 subscribes to notifications before zeroing/setting soft caps, and requests B1 strength feedback using nonzero sequence numbers. Waveforms continue while an acknowledgment is pending; zero/pause bypass the wait. SPS, PCS and map triggers do not require an App connection; legacy `sendwave` also uses the shared output router.
 
 ## Device control
 
@@ -102,7 +110,7 @@ When LMS is checked, all selected Plug depths (`PenSelf/PenOthers`) must be zero
 
 When PCS is checked, it contributes only when no valid Socket depth parameters match the selected zone. Valid numeric parameters are a same-zone, same-owner Root/Tip pair or a legacy `PenSelf/PenOthers` depth. Zero depth does not enable PCS. Availability is determined from the live OSCQuery inventory and received Socket signals and is rechecked after avatar, parameter, or zone changes.
 
-PCS and LMS are controlled by their own checkboxes, not the extra-parameter/map switch, and expire after 0.5 seconds without updates. Disabling Socket or Plug removes its strength contribution but preserves observations needed for the PCS/LMS guards. Save and apply clears old trigger values without reconnecting the APP.
+PCS and LMS have independent checkboxes and expire after 0.5 seconds without updates. Disabling Socket or Plug preserves observations needed for fallback guards. Input changes invalidate only affected sources; cap/waveform changes preserve depth without reconnecting the APP.
 
 ## Configuration File Reference
 

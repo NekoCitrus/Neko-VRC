@@ -169,6 +169,7 @@ def sps_osc_bindings(trigger_type, zone_id):
             'PenOthersNewTip',
             'PenSelf',
             'PenOthers',
+            'PenOthersClose',
         )
     else:
         signals = ('PenSelf', 'PenOthers')
@@ -235,6 +236,7 @@ class SPSDepthCalculator:
             raise ValueError(f'不支持的 SPS 触发类型：{trigger_type}')
         self.trigger_type = trigger_type
         self.values = {}
+        self.has_close_gate = False
         self.detectors = {
             'Self': _PenetratorLengthDetector(),
             'Others': _PenetratorLengthDetector(),
@@ -245,6 +247,8 @@ class SPSDepthCalculator:
         return min(max(float(value), 0.0), 1.0)
 
     def update(self, signal, value):
+        if signal == 'PenOthersClose':
+            self.has_close_gate = True
         self.values[signal] = self._clamp(value)
         if self.trigger_type == SPS_SOCKET:
             for owner in ('Self', 'Others'):
@@ -277,6 +281,8 @@ class SPSDepthCalculator:
         new_depth = self._new_socket_depth(owner)
         if new_depth is not None:
             return new_depth
+        if owner == 'Others' and self.has_close_gate and not self.values.get('PenOthersClose', 0):
+            return 0.0
         return self.values.get(f'Pen{owner}', 0.0)
 
     @property

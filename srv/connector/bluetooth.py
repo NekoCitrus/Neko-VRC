@@ -27,11 +27,15 @@ class BLEHost:
         self.error = ''
         self.battery = None
         self.feedback = {'A': 0, 'B': 0}
+        self.reported_strength = {'A': None, 'B': None}
+        self._coyote_sequence = 0
+        self._coyote_pending = None
         self.commanded = {'A': 0, 'B': 0}
         self.sent_frames = {'A': ZERO_FRAME, 'B': ZERO_FRAME}
         self.frames = {'A': (ZERO_FRAME, 0), 'B': (ZERO_FRAME, 0)}
         self.display_supported = True
         self._closing = False
+        self.communication_latency = None
 
     def limits(self):
         return {channel: self.settings['dglab3'][self.kind][f'channel_{channel.lower()}']['strength_limit']
@@ -39,6 +43,9 @@ class BLEHost:
 
     def _disconnected(self, _client):
         self.connected = False
+        self.communication_latency = None
+        self.reported_strength = {'A': None, 'B': None}
+        self._coyote_pending = None
         self.frames = {'A': (ZERO_FRAME, 0), 'B': (ZERO_FRAME, 0)}
         self.commanded = {'A': 0, 'B': 0}
         self.sent_frames = {'A': ZERO_FRAME, 'B': ZERO_FRAME}
@@ -61,10 +68,14 @@ class BLEHost:
             return
         if a <= 200 and b <= 200:
             self.feedback = {'A': a, 'B': b}
+            self.reported_strength = dict(self.feedback)
+            if self.model == 'coyote3' and self._coyote_pending and data[1] == self._coyote_pending[0]:
+                self._coyote_pending = None
             if self.model == 'opossum' and self.display_supported and self.connected:
                 asyncio.create_task(self._update_display())
 
     async def _write(self, data, characteristic=WRITE_UUID):
+        started = time.perf_counter()
         # Write-with-response gives bounded flow control on Windows.
         response = True
         services = getattr(self.client, 'services', None)
@@ -77,6 +88,12 @@ class BLEHost:
                                  or len(data) > char.max_write_without_response_size):
                 raise ValueError('设备不支持此蓝牙写入长度。')
         await asyncio.wait_for(self.client.write_gatt_char(characteristic, data, response=response), 2)
+        from srv.diagnostics import record_latency
+        milliseconds = record_latency(f'ble.{self.kind}.gatt_write', started)
+        self.communication_latency = {
+            'kind': 'ble_write_response' if response else 'ble_write_enqueue',
+            'milliseconds': round(milliseconds, 2),
+        }
 
     async def _update_display(self):
         try:
@@ -88,6 +105,10 @@ class BLEHost:
             logger.warning('负鼠屏幕更新不可用：{}', exc)
 
     async def connect(self):
+        started = time.perf_counter()
+        self.communication_latency = None
+        self.reported_strength = {'A': None, 'B': None}
+        self._coyote_pending = None
         if self.model not in ('coyote2', 'coyote3', 'opossum'):
             raise ValueError('蓝牙型号无效。')
         expected_kind = 'opossum' if self.model == 'opossum' else 'coyote'
@@ -110,6 +131,8 @@ class BLEHost:
         try:
             await self.client.connect()
             self.connected = True
+            notify = V2_STRENGTH_UUID if self.model == 'coyote2' else NOTIFY_UUID
+            await self.client.start_notify(notify, self._notify)
             async with self.lock:
                 # Explicit zero BEFORE arming any waveform, including stale
                 # hardware strength left behind by a previous application.
@@ -117,8 +140,6 @@ class BLEHost:
                 if self.model == 'coyote3':
                     limits = self.limits()
                     await self._write(coyote_limits(limits['A'], limits['B']))
-            notify = V2_STRENGTH_UUID if self.model == 'coyote2' else NOTIFY_UUID
-            await self.client.start_notify(notify, self._notify)
             battery = v2_uuid(0x1500) if self.model == 'coyote2' else BATTERY_UUID
             try:
                 self._battery(None, await self.client.read_gatt_char(battery))
@@ -130,13 +151,31 @@ class BLEHost:
                 if self.display_supported:
                     await self._update_display()
             self.task = asyncio.create_task(self._run())
+            from srv.diagnostics import record_latency
+            record_latency(f'ble.{self.kind}.connect_and_initialize', started)
+            logger.info('蓝牙连接就绪：{} {}，通道上限 {}，无需 App。', self.kind, self.model, self.limits())
         except BaseException:
             await self.close()
             raise
 
     async def _write_output(self, a, b, target, force=False):
         if self.model == 'coyote3':
-            await self._write(coyote_packet(a, b, target['A'], target['B']))
+            now = time.monotonic()
+            needs_report = force or target != self.commanded or any(self.reported_strength[c] != target[c] for c in ('A', 'B'))
+            pending = self._coyote_pending
+            zero_override = any(target[c] == 0 and self.commanded[c] != 0 for c in ('A', 'B'))
+            request = needs_report and (pending is None or now - pending[1] >= 0.5 or zero_override or force)
+            sequence = 0
+            change = pending is None or request
+            if request:
+                self._coyote_sequence = self._coyote_sequence % 15 + 1
+                sequence = self._coyote_sequence
+                self._coyote_pending = (sequence, now)
+            # Keep delivering waveforms while waiting for B1, but don't queue
+            # another positive strength change until acknowledged or timed out.
+            if not change:
+                target = dict(self.commanded)
+            await self._write(coyote_packet(a, b, target['A'], target['B'], sequence, change))
         elif self.model == 'opossum':
             if force or target != self.commanded or self.feedback != target:
                 await self._write(opossum_strength(target['A'], target['B']))
@@ -186,8 +225,11 @@ class BLEHost:
             await self.tick()
 
     async def apply_settings(self, settings):
+        old_limits = self.limits()
         self.settings = settings
-        await self.clear()
+        if old_limits == self.limits():
+            return
+        await self.tick()
         if self.connected and self.model == 'coyote3':
             limits = self.limits()
             async with self.lock:
@@ -206,6 +248,9 @@ class BLEHost:
             logger.warning('蓝牙归零失败：{}', exc)
         finally:
             self.connected = False
+            self.communication_latency = None
+            self.reported_strength = {'A': None, 'B': None}
+            self._coyote_pending = None
             if self.client:
                 try:
                     await asyncio.wait_for(self.client.disconnect(), 3)
@@ -220,7 +265,9 @@ class BLEHost:
             'device_type': {'coyote2': 'COYOTE_020', 'coyote3': 'COYOTE_030', 'opossum': 'OVC_1'}[self.model],
             'device_name': self.model, 'transport': 'bluetooth', 'connected': self.connected,
             'strength': dict(self.feedback), 'sent_strength': dict(self.commanded),
+            'reported_strength': dict(self.reported_strength),
             'sent_frames': dict(self.sent_frames),
+            'communication_latency': self.communication_latency if self.connected else None,
             'strength_max': self.limits(), 'upper_strength': self.limits(),
             'battery': self.battery, 'error': self.error, 'display_supported': self.display_supported,
         }

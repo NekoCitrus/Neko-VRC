@@ -106,6 +106,19 @@ class FakeClient:
 
 
 class BLETests(unittest.IsolatedAsyncioTestCase):
+    async def test_connection_latency_is_per_host_and_cleared_on_disconnect(self):
+        coyote = await self.make_host('coyote3')
+        opossum = await self.make_host('opossum')
+        first = coyote.snapshot()['communication_latency']
+        second = opossum.snapshot()['communication_latency']
+        self.assertEqual(first['kind'], 'ble_write_response')
+        self.assertEqual(second['kind'], 'ble_write_response')
+        self.assertIsNot(first, second)
+        self.assertGreaterEqual(first['milliseconds'], 0)
+        await coyote.close()
+        self.assertIsNone(coyote.snapshot()['communication_latency'])
+        self.assertIsNotNone(opossum.snapshot()['communication_latency'])
+
     async def make_host(self, model='opossum'):
         kind = 'opossum' if model == 'opossum' else 'coyote'
         host = BLEHost(kind, model, 'test-address', settings(), FakeClient)
@@ -119,7 +132,7 @@ class BLETests(unittest.IsolatedAsyncioTestCase):
                 host = await self.make_host(model)
                 first = host.client.writes[0][1]
                 if model == 'coyote2': self.assertEqual(first, bytes(3))
-                elif model == 'coyote3': self.assertEqual(first, coyote_packet(ZERO_FRAME, ZERO_FRAME, 0, 0))
+                elif model == 'coyote3': self.assertEqual(first, coyote_packet(ZERO_FRAME, ZERO_FRAME, 0, 0, sequence=1))
                 else: self.assertEqual(first, bytes.fromhex('B30000'))
                 self.assertEqual(host.battery, 80)
                 self.assertEqual(host.commanded, {'A': 0, 'B': 0})
@@ -204,6 +217,7 @@ class BLETests(unittest.IsolatedAsyncioTestCase):
             properties=['write-without-response'], max_write_without_response_size=20))
         await host._write(opossum_strength(0, 0))
         self.assertFalse(host.client.writes[-1][2])
+        self.assertEqual(host.snapshot()['communication_latency']['kind'], 'ble_write_enqueue')
         with self.assertRaises(ValueError):
             await host._write(opossum_display(0, 0))
 

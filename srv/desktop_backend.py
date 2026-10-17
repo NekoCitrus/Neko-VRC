@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 from loguru import logger
 
@@ -23,19 +24,39 @@ from srv.steamvr_autostart import configure_steamvr_autostart
 
 class BackendAPI:
     def __init__(self, config_dir=None, launch_executable=None):
-        core.config_init(config_dir)
+        log_dir = Path(launch_executable).resolve().parent / 'log' if launch_executable and config_dir is None else None
+        core.config_init(config_dir, log_dir=log_dir)
         self.manager = core.CONFIG_MANAGER
+        self.log_path = str(core.RUN_LOG_PATH)
         self.settings, self.basic = copy.deepcopy(core.SETTINGS), copy.deepcopy(core.SETTINGS_BASIC)
         self.controller = core.ServiceController(event_callback=self.on_event)
         self.avatar = {}
         self.logs = deque(maxlen=100)
+        self._last_strength_display = {}
         self.log_lock = threading.Lock()
         self.launch_executable = launch_executable
         self.log_sink = logger.add(self._append_log, level='INFO')
+        logger.info('运行日志：{}', self.log_path)
 
     def _append_log(self, message):
+        record = message.record
+        extra = record['extra']
+        if not extra.get('strength_event'):
+            return
+        name = '郊狼' if extra['device_kind'] == 'coyote' else '负鼠'
+        def pair(calculated, actual):
+            return f'计算 {calculated:g} / 实际 {actual if actual is not None else "未反馈"}'
+        hosts = extra.get('strength_hosts') or ()
+        values = '；'.join(pair(item['calculated_strength'], item['actual_strength']) for item in hosts)
+        if not values:
+            values = pair(extra['calculated'], extra['actual'])
+        line = f'{record["time"]:%H:%M:%S}  {name} {extra["channel"]}：{values}'
         with self.log_lock:
-            self.logs.append(str(message).strip())
+            key = extra['device_kind'], extra['channel']
+            if self._last_strength_display.get(key) == values:
+                return
+            self._last_strength_display[key] = values
+            self.logs.append(line)
 
     def on_event(self, event):
         if event.get('type') == 'avatar':
@@ -45,7 +66,7 @@ class BackendAPI:
         with self.log_lock:
             logs = list(self.logs)
         return {'service': self.controller.state, 'runtime': self.controller.snapshot(),
-                'avatar': self.avatar, 'logs': logs}
+                'avatar': self.avatar, 'logs': logs, 'log_path': self.log_path}
 
     def initial(self):
         return {'settings': copy.deepcopy(self.settings), 'basic': copy.deepcopy(self.basic),
@@ -53,13 +74,15 @@ class BackendAPI:
                 **self.state()}
 
     def save(self, settings, basic):
+        started = time.perf_counter()
         validate_config(settings, basic)
+        if settings == self.settings and basic == self.basic:
+            return self.initial()
         # Failed persistence rolls live settings back and clears old triggers.
         previous_settings, previous_basic = self.settings, self.basic
         self.controller.apply_settings(settings, basic)
         try:
-            if (settings['general']['steamvr_auto_start']
-                    or settings['general']['steamvr_auto_start'] != previous_settings['general']['steamvr_auto_start']):
+            if settings['general']['steamvr_auto_start'] != previous_settings['general']['steamvr_auto_start']:
                 configure_steamvr_autostart(
                     self.manager.config_dir, settings['general']['steamvr_auto_start'],
                     executable=self.launch_executable,
@@ -69,6 +92,8 @@ class BackendAPI:
             self.controller.apply_settings(previous_settings, previous_basic)
             raise
         self.settings, self.basic = copy.deepcopy(settings), copy.deepcopy(basic)
+        from srv.diagnostics import record_latency
+        record_latency('config.hot_apply_and_persist', started)
         return self.initial()
 
     def dispatch(self, method, data=None):

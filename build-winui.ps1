@@ -48,7 +48,20 @@ try {
         }
     }
     $archive = Join-Path $productRoot "Neko-VRC-WinUI-v$releaseVersion-win-x64.zip"
-    Compress-Archive -LiteralPath $releaseDir -DestinationPath $archive -Force
+    # Never ship runtime logs from a user running the unpackaged product.
+    # Keep those files in place; exclude them only from the distributable ZIP.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipStream = [System.IO.File]::Open($archive, [System.IO.FileMode]::Create)
+    $zip = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $productPrefix = (Split-Path -Leaf $releaseDir) + '/'
+        foreach ($productFile in Get-ChildItem -LiteralPath $releaseDir -Recurse -File) {
+            $relative = $productFile.FullName.Substring($releaseDir.Length + 1).Replace('\', '/')
+            if ($relative.StartsWith('log/', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $productFile.FullName, $productPrefix + $relative, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    } finally { $zip.Dispose(); $zipStream.Dispose() }
     Write-Host "Ready: $releaseDir\Neko-VRC.exe"
     Write-Host "Archive: $archive"
 } finally { Pop-Location }
