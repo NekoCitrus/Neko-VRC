@@ -32,6 +32,10 @@ Our VRChat Group: [ShockingVRC https://vrc.group/SHOCK.2911](https://vrc.group/S
 - **Runtime Debug:** only calculated and device-reported strengths for Coyote/Opossum channels. Unchanged values are not repeated, and new entries automatically scroll to the bottom. Missing device feedback is labeled explicitly. Connection and battery status remain on device settings pages.
 - **Copyright:** project and code sources, frontend contributors, and the open-source license.
 
+**General → Manage waveforms** opens a subpage with isolated Coyote and Opossum libraries. Multi-select and drag items between the library and channel dropdown list; reorder the right-hand list by dragging. Edits save immediately without reconnecting. Selecting an item previews its amplitude envelope without driving hardware. Import ZIP archives, folders, or one/multiple `.pulse` files; duplicate content is skipped and reported. Switch a channel away from a waveform before removing it from the list.
+
+The sample archive contains Coyote App waveforms, not Opossum waveforms. Opossum import currently accepts only explicitly device-tagged frame exchange files, not unverified official App export formats. See [waveform formats and limitations](doc/waveform-library.md). User waveforms are stored in `%APPDATA%\Neko-VRC\waveforms\library.json` and are excluded from releases.
+
 Only one DG-LAB APP connection is accepted, but every supported Coyote and Opossum slot reported by that APP is controlled concurrently.
 
 Each channel groups triggers into depth/zone, PCS/LMS fallback, and parameter/map columns. Its 0–200 cap slider and input are synchronized. A thicker blue level inside the native Slider track shows calculated strength, not instantaneous waveform amplitudes or hardware feedback; the A/B heading shows the source and calculated value. For multiple matching hosts it shows the maximum calculated level under their individual caps. Paused/disconnected output shows zero.

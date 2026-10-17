@@ -43,6 +43,7 @@ public sealed partial class MainWindow : Window
         ViewModel.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(MainViewModel.Theme)) ApplyTheme(); };
         ApplyTheme();
         ViewModel.QrReady += ShowQr;
+        ViewModel.WaveformsRequested += OpenWaveforms;
         ViewModel.OperationError += message => { ErrorBar.Message = message; ErrorBar.IsOpen = message.Length > 0; };
         Title = "Neko-VRC";
         ExtendsContentIntoTitleBar = true;
@@ -121,6 +122,22 @@ public sealed partial class MainWindow : Window
         bar.ButtonForegroundColor = Root.ActualTheme == ElementTheme.Dark ? Colors.White : Colors.Black;
     }
     private void PaneToggleRequested(TitleBar sender, object args) => Navigation.IsPaneOpen = !Navigation.IsPaneOpen;
+    private void OpenWaveforms()
+    {
+        Navigation.SelectedItem = Navigation.MenuItems[0];
+        ViewModel.SelectPage("waveforms");
+        PageTitle.Text = "波形库";
+        AppTitleBar.IsBackButtonVisible = true;
+        ContentFrame.Navigate(typeof(WaveformsPage), ViewModel, new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight });
+    }
+    private void BackRequested(TitleBar sender, object args)
+    {
+        ViewModel.SelectPage("general");
+        PageTitle.Text = "基本设置";
+        AppTitleBar.IsBackButtonVisible = false;
+        ContentFrame.Navigate(typeof(GeneralPage), ViewModel, new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromLeft });
+        ContentFrame.BackStack.Clear();
+    }
     private void ContentFrameSizeChanged(object sender, SizeChangedEventArgs args)
     {
         // Keep the native page transition inside a stable viewport; cards cannot
@@ -144,6 +161,7 @@ public sealed partial class MainWindow : Window
         // DevicePage captures its DeviceViewModel, so its connection card and
         // channels remain intact while the entire outgoing page animates away.
         ViewModel.SelectPage(tag);
+        AppTitleBar.IsBackButtonVisible = false;
         PageTitle.Text = item.Content?.ToString() ?? "";
         Type page = tag switch { "coyote" or "opossum" => typeof(DevicePage), "debug" => typeof(DebugPage), "about" => typeof(AboutPage), _ => typeof(GeneralPage) };
         _lastPageTransition = e.RecommendedNavigationTransitionInfo ?? new EntranceNavigationTransitionInfo();
@@ -243,7 +261,10 @@ public sealed partial class MainWindow : Window
             var nativeTrack = Descendants(slider).OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Single(r => r.Name == "HorizontalTrackRect");
             var nativeFill = Descendants(slider).OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Single(r => r.Name == "HorizontalDecreaseRect");
             var nativeThumb = Descendants(slider).OfType<Microsoft.UI.Xaml.Controls.Primitives.Thumb>().Single(t => t.Name == "HorizontalThumb");
-            if (nativeThumb.ActualWidth != 18 || nativeThumb.ActualHeight != 18) throw new Exception("Slider must keep the modern WinUI native thumb style, not the legacy fallback.");
+            // Layout rounding at 125% DPI turns 18 DIP into 23 physical pixels
+            // (18.4 DIP). Verify the native style, not exact rounded ActualSize.
+            double layoutPixel = 1 / Root.XamlRoot.RasterizationScale;
+            if (nativeThumb.Width != 18 || nativeThumb.Height != 18 || Math.Abs(nativeThumb.ActualWidth - 18) > layoutPixel || Math.Abs(nativeThumb.ActualHeight - 18) > layoutPixel) throw new Exception($"Native Slider thumb style/rounded size is wrong: {nativeThumb.ActualWidth} x {nativeThumb.ActualHeight}.");
             if (meter.Height != 6 || meter.ActualHeight <= nativeTrack.ActualHeight || !ReferenceEquals(meter.Background, nativeFill.Fill)) throw new Exception("Level must be thicker than the native track and reuse its official accent brush.");
             if (Math.Abs(meter.ActualWidth - (nativeThumb.ActualWidth / 2 + (slider.ActualWidth - nativeThumb.ActualWidth) * 35 / 200)) > 1) throw new Exception("Level endpoints are not aligned to native Slider thumb travel.");
             strengthSlider.CalculatedStrength = 0;
@@ -550,6 +571,7 @@ public sealed partial class MainWindow : Window
         }
         ViewModel.Theme = "system";
         Root.Background = null;
+        await VerifyWaveformsAsync();
         var changedChannel = ViewModel.Devices[0].Channels[0]; changedChannel.SocketEnabled = false;
         ViewModel.Theme = "dark";
         await ViewModel.SaveAsync();
@@ -559,7 +581,7 @@ public sealed partial class MainWindow : Window
         ViewModel.StopCommand.Execute(null); await Task.Delay(300); await ViewModel.PollAsync();
         if (!ViewModel.Status.Contains("已暂停")) throw new Exception("Independent pause event failed.");
         await ViewModel.DeviceActionAsync("resume");
-        string result = "PASS: no Save button; automatic coalesced settings application/persistence and invalid-input protection; scoped QR selects App without displacing connected BLE hosts; computed-strength meter/source labels are independent of waveform samples; default 940x640 compact layout; global hints and help; themes, five pages and three sizes; 24 rapid switches preserve settings; pause/resume and immediate-hide shutdown.\n";
+        string result = "PASS: waveform subpage, import/deduplication, previews, catalog reorder, device isolation, live custom selection, both themes; no Save button; automatic coalesced settings application/persistence and invalid-input protection; scoped QR selects App without displacing connected BLE hosts; computed-strength meter/source labels are independent of waveform samples; default 940x640 compact layout; global hints and help; themes, five pages and three sizes; 24 rapid switches preserve settings; pause/resume and immediate-hide shutdown.\n";
         if (Preview) {
             changedChannel.SocketEnabled = true; ViewModel.Background = false;
             ViewModel.UpdateState(testState); Navigation.SelectedItem = navigationItems[0];
@@ -579,5 +601,58 @@ public sealed partial class MainWindow : Window
         if (!ReferenceEquals(shutdown, FinishExitAsync())) throw new Exception("Duplicate exit does not share cleanup task.");
         File.WriteAllText(Path.Combine(App.TestDirectory!, "result.txt"), result + $"Window hidden within {closeTimer.ElapsedMilliseconds} ms.\n");
         await shutdown;
+    }
+
+    private async Task VerifyWaveformsAsync()
+    {
+        Navigation.SelectedItem = Navigation.MenuItems[0];
+        OpenWaveforms(); await Task.Delay(100);
+        var page = (WaveformsPage)ContentFrame.Content;
+        await page.LoadTask;
+        if (!AppTitleBar.IsBackButtonVisible || PageTitle.Text != "波形库") throw new Exception("Waveform subpage/back action is missing.");
+        string pulsePath = Path.Combine(App.TestDirectory!, "smoke.pulse");
+        File.WriteAllText(pulsePath, "Dungeonlab+pulse:0,1,16=0,83,3,1,1/0-1,100-1");
+        await page.ImportPathsAsync(new[] { pulsePath });
+        await page.ImportPathsAsync(new[] { pulsePath });
+        var lists = Descendants(page).OfType<ListView>().ToArray();
+        var library = lists.Single(l => l.Name == "LibraryList");
+        var enabled = lists.Single(l => l.Name == "EnabledList");
+        var imported = library.Items.OfType<WaveformItem>().Single(i => !i.Builtin);
+        library.SelectedItem = imported;
+        await Task.Delay(150);
+        if (Descendants(page).OfType<Microsoft.UI.Xaml.Shapes.Polyline>().Single().Points.Count == 0) throw new Exception("Waveform preview did not render.");
+        await page.MoveSelectionAsync(new[] { imported.Id }.ToHashSet(), true);
+        if (!enabled.Items.OfType<WaveformItem>().Any(i => i.Id == imported.Id) || library.Items.OfType<WaveformItem>().Any(i => i.Id == imported.Id)) throw new Exception("Cross-list waveform move failed.");
+        await page.MoveSelectionAsync(new[] { imported.Id }.ToHashSet(), false);
+        if (enabled.Items.OfType<WaveformItem>().Any(i => i.Id == imported.Id)) throw new Exception("Waveform removal failed.");
+        var listIds = enabled.Items.OfType<WaveformItem>().Select(i => i.Id).Prepend(imported.Id).ToArray();
+        var result = await ViewModel.WaveformOperationAsync("waveform_select", new() { ["kind"] = "coyote", ["enabled"] = new JsonArray(listIds.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()) });
+        var coyote = ViewModel.Devices[0].Channels[0];
+        var opossum = ViewModel.Devices[1].Channels[0];
+        if (coyote.WaveformChoices[0].Name != imported.Name || opossum.Waveforms.Contains(imported.Id)) throw new Exception("Waveform library display names/isolation failed.");
+        coyote.Waveform = imported.Id; await ViewModel.PendingApplyTask;
+        Navigation.SelectedItem = Navigation.MenuItems[1]; await Task.Delay(150); Root.UpdateLayout();
+        var selector = Descendants(ContentFrame).OfType<ComboBox>().Single(b => ReferenceEquals(b.ItemsSource, coyote.WaveformChoices));
+        if (selector.SelectedValue as string != imported.Id || (selector.SelectedItem as Zone)?.Name != imported.Name) throw new Exception("Imported waveform selection did not survive page navigation.");
+        var saved = (await _client.CallAsync("init"))["data"]!;
+        if (saved["settings"]!["dglab3"]!["coyote"]!["channel_a"]!["depth"]!["waveform"]!.GetValue<string>() != imported.Id) throw new Exception("Imported waveform was not hot-applied.");
+        coyote.Waveform = "纯粹"; await ViewModel.PendingApplyTask;
+        OpenWaveforms(); await Task.Delay(100); page = (WaveformsPage)ContentFrame.Content; await page.LoadTask;
+        var kindBox = Descendants(page).OfType<ComboBox>().Single(b => b.Name == "KindBox");
+        foreach (string theme in new[] { "light", "dark" }) {
+            ViewModel.Theme = theme;
+            Root.Background = new SolidColorBrush(theme == "light" ? Windows.UI.Color.FromArgb(255, 243, 243, 243) : Windows.UI.Color.FromArgb(255, 32, 32, 32));
+            foreach (int index in new[] { 0, 1 }) {
+                kindBox.SelectedIndex = index; await Task.Delay(450); Root.UpdateLayout();
+                Descendants(page).OfType<ListView>().Single(l => l.Name == "EnabledList").SelectedIndex = 0;
+                await Task.Delay(150); Root.UpdateLayout();
+                if (index == 1 && Descendants(page).OfType<ListView>().SelectMany(l => l.Items.OfType<WaveformItem>()).Any(i => i.Id == imported.Id)) throw new Exception("Coyote waveform leaked into Opossum library.");
+                if (page.ActualWidth > ContentFrame.ActualWidth + 1 || Descendants(page).OfType<ListView>().Any(l => l.ActualHeight < 100)) throw new Exception("Waveform layout does not fit minimum window dimensions.");
+                await CaptureAsync($"{theme}-waveforms-{index}");
+            }
+        }
+        Root.Background = null; ViewModel.Theme = "system";
+        BackRequested(AppTitleBar, new object());
+        if (ContentFrame.Content is not GeneralPage || AppTitleBar.IsBackButtonVisible) throw new Exception("Waveform subpage back navigation failed.");
     }
 }

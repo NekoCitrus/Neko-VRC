@@ -5,7 +5,7 @@
  <Window.SystemBackdrop><MicaBackdrop/></Window.SystemBackdrop>
  <Grid x:Name="Root" Loaded="RootLoaded" ActualThemeChanged="ThemeChanged">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-  <TitleBar x:Name="AppTitleBar" Title="Neko-VRC" IsBackButtonVisible="False" IsPaneToggleButtonVisible="True" PaneToggleRequested="PaneToggleRequested">
+  <TitleBar x:Name="AppTitleBar" Title="Neko-VRC" IsBackButtonVisible="False" BackRequested="BackRequested" IsPaneToggleButtonVisible="True" PaneToggleRequested="PaneToggleRequested">
    <TitleBar.IconSource><ImageIconSource ImageSource="ms-appx:///Assets/neko-vrc.ico"/></TitleBar.IconSource>
   </TitleBar>
   <NavigationView x:Name="Navigation" Grid.Row="1" IsSettingsVisible="False" IsBackButtonVisible="Collapsed" IsPaneToggleButtonVisible="False"

@@ -79,6 +79,29 @@ class BackendTests(unittest.TestCase):
         data['basic']['dglab3']['coyote']['channel_a']['socket_enabled'] = False
         self.assertTrue(self.api.basic['dglab3']['coyote']['channel_a']['socket_enabled'])
 
+    def test_waveform_import_selection_and_preview_do_not_restart_devices(self):
+        from pathlib import Path
+        from srv.waveform_library import parse_pulse
+        pulse = 'Dungeonlab+pulse:0,1,16=0,83,3,1,1/0-1,100-1'
+        source = Path(self.temp.name) / 'test.pulse'
+        source.write_text(pulse)
+        with patch.object(self.api.controller, 'apply_settings') as apply:
+            result = self.api.dispatch('waveform_import', {'kind': 'coyote', 'paths': [str(source)]})
+            self.assertEqual(result['report']['imported'], 1)
+            key = next(item['id'] for item in result['catalog']['coyote']['items'] if not item['builtin'])
+            self.api.dispatch('waveform_select', {'kind': 'coyote', 'enabled': [key, '纯粹']})
+            self.assertEqual(self.api.dispatch('waveform_preview', {'kind': 'coyote', 'id': key})['duration'], .4)
+            apply.assert_not_called()
+        initial = self.api.initial()
+        self.assertNotIn('_waveform_frames', initial['settings'])
+        initial['settings']['dglab3']['coyote']['channel_a']['depth']['waveform'] = key
+        self.api.save(initial['settings'], initial['basic'])
+        self.assertEqual(tuple(self.api.settings['_waveform_frames']['coyote'][key]), parse_pulse(pulse, 'coyote'))
+        with self.assertRaises(ValueError):
+            self.api.dispatch('waveform_select', {'kind': 'coyote', 'enabled': ['纯粹']})
+        loaded, _ = self.api.manager.load()
+        self.assertEqual(loaded['dglab3']['coyote']['channel_a']['depth']['waveform'], key)
+
     def test_save_retains_sources_and_connection_configuration(self):
         settings, basic = copy.deepcopy(self.api.settings), copy.deepcopy(self.api.basic)
         settings['connections']['opossum'].update(mode='bluetooth', address='11:22')

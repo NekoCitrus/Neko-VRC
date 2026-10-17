@@ -17,7 +17,6 @@ from pathlib import Path
 from loguru import logger
 
 import shocking_vrchat as core
-from srv import WAVEFORM_NAMES_BY_DEVICE
 from srv.config_manager import validate_config
 from srv.steamvr_autostart import configure_steamvr_autostart
 
@@ -69,12 +68,17 @@ class BackendAPI:
                 'avatar': self.avatar, 'logs': logs, 'log_path': self.log_path}
 
     def initial(self):
-        return {'settings': copy.deepcopy(self.settings), 'basic': copy.deepcopy(self.basic),
-                'waveforms': WAVEFORM_NAMES_BY_DEVICE, 'config_path': str(self.manager.path),
+        settings = copy.deepcopy(self.settings)
+        settings.pop('_waveform_frames', None)
+        catalog = self.manager.waveform_library.catalog()
+        return {'settings': settings, 'basic': copy.deepcopy(self.basic),
+                'waveforms': {kind: item['enabled'] for kind, item in catalog.items()},
+                'waveform_catalog': catalog, 'config_path': str(self.manager.path),
                 **self.state()}
 
     def save(self, settings, basic):
         started = time.perf_counter()
+        settings = self.manager.waveform_library.attach(settings)
         validate_config(settings, basic)
         if settings == self.settings and basic == self.basic:
             return self.initial()
@@ -102,6 +106,19 @@ class BackendAPI:
             return self.initial()
         if method == 'snapshot':
             return self.state()
+        if method == 'waveforms':
+            return {'catalog': self.manager.waveform_library.catalog()}
+        if method == 'waveform_preview':
+            return self.manager.waveform_library.preview(data['kind'], data['id'])
+        if method == 'waveform_import':
+            report = self.manager.waveform_library.import_paths(data['kind'], data['paths'])
+            return {'catalog': self.manager.waveform_library.catalog(), 'report': report}
+        if method == 'waveform_select':
+            kind = data['kind']
+            active = [self.settings['dglab3'][kind][channel]['depth']['waveform']
+                      for channel in ('channel_a', 'channel_b')]
+            self.manager.waveform_library.select(kind, data['enabled'], active)
+            return {'catalog': self.manager.waveform_library.catalog()}
         if method == 'bluetooth_check':
             # Import Windows backends without scanning or connecting. This
             # also catches missing WinRT binaries in a frozen distribution.

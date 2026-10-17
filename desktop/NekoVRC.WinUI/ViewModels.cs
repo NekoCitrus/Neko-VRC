@@ -89,8 +89,8 @@ public sealed class ChannelViewModel : Observable
     public string ExtraPaths { get => _extraPaths; set => Set(ref _extraPaths, value); }
     public ObservableCollection<Zone> SocketZones { get; } = new();
     public ObservableCollection<Zone> PlugZones { get; } = new();
-    public IReadOnlyList<string> Waveforms { get; }
-    public IReadOnlyList<Zone> WaveformChoices { get; }
+    public IReadOnlyList<string> Waveforms { get; private set; } = Array.Empty<string>();
+    public IReadOnlyList<Zone> WaveformChoices { get; private set; } = Array.Empty<Zone>();
     public bool IsUpdatingZones { get; private set; }
     private string _debug = "无输出";
     public string Debug { get => _debug; set => Set(ref _debug, value); }
@@ -118,6 +118,15 @@ public sealed class ChannelViewModel : Observable
         Waveforms = waveforms.Select(p => p!.GetValue<string>()).ToArray();
         WaveformChoices = Waveforms.Select(name => new Zone(name, name)).ToArray();
         UpdateZones(null, null);
+    }
+
+    public void UpdateWaveforms(JsonObject catalog)
+    {
+        var names = catalog["items"]!.AsArray().ToDictionary(p => p!["id"]!.GetValue<string>(), p => p!["name"]!.GetValue<string>());
+        Waveforms = catalog["enabled"]!.AsArray().Select(p => p!.GetValue<string>()).ToArray();
+        WaveformChoices = Waveforms.Select(id => new Zone(id, names[id])).ToArray();
+        Changed(nameof(Waveforms)); Changed(nameof(WaveformChoices));
+        Changed(nameof(Waveform));
     }
 
     public void UpdateZones(JsonArray? sockets, JsonArray? plugs)
@@ -288,6 +297,8 @@ public sealed class MainViewModel : Observable
     public ICommand ResumeCommand { get; }
     public event Action<JsonArray>? QrReady;
     public event Action<string>? OperationError;
+    public event Action? WaveformsRequested;
+    public ICommand WaveformsCommand { get; }
     public ICommand QrCommand { get; }
 
     public MainViewModel(BackendClient client)
@@ -297,6 +308,7 @@ public sealed class MainViewModel : Observable
         StopCommand = new Command(_ => { _client.EmergencyStop(); Status = "正在暂停…"; }, () => Ready);
         ResumeCommand = new Command(_ => Run(() => DeviceActionAsync("resume")), () => Ready && !Busy);
         QrCommand = new Command(_ => Run(() => ShowQrAsync()), () => Ready && !Busy);
+        WaveformsCommand = new Command(_ => WaveformsRequested?.Invoke(), () => Ready);
         PropertyChanged += (_, e) => { if (e.PropertyName is nameof(Background) or nameof(SteamVR) or nameof(Chatbox)) ScheduleApply(); };
     }
 
@@ -357,6 +369,7 @@ public sealed class MainViewModel : Observable
             }
             Devices.Add(device);
         }
+        UpdateWaveformCatalog(data["waveform_catalog"]!.AsObject());
         Ready = true; Status = "后台已连接";
         foreach (var device in Devices) {
             device.PropertyChanged += (_, e) => { if (e.PropertyName is nameof(DeviceViewModel.Mode) or nameof(DeviceViewModel.Address) or nameof(DeviceViewModel.Model)) ScheduleApply(); };
@@ -409,6 +422,25 @@ public sealed class MainViewModel : Observable
     {
         var response = await _client.CallAsync(action, kind == null ? null : new() { ["kind"] = kind });
         UpdateState(response["data"]!.AsObject());
+    }
+
+    private void UpdateWaveformCatalog(JsonObject catalog)
+    {
+        foreach (var device in Devices)
+            foreach (var channel in device.Channels) channel.UpdateWaveforms(catalog[device.Kind]!.AsObject());
+    }
+
+    public async Task<JsonObject> WaveformOperationAsync(string method, JsonObject? data = null)
+    {
+        // Serialize library edits with auto-save; pending channel changes must be
+        // committed before checking whether a waveform is currently in use.
+        await FlushSettingsAsync();
+        await _applyGate.WaitAsync();
+        try {
+            var response = (await _client.CallAsync(method, data))["data"]!.AsObject();
+            if (response["catalog"] is JsonObject catalog) UpdateWaveformCatalog(catalog);
+            return response;
+        } finally { _applyGate.Release(); }
     }
 
     public Task ScanAsync(DeviceViewModel device) => device.ScanAsync(async () =>

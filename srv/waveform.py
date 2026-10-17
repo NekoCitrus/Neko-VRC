@@ -10,10 +10,11 @@ from srv import WAVEFORMS_BY_DEVICE
 _FRAME_RE = re.compile(r'^[0-9A-Fa-f]{16}$')
 
 
-def load_waveform_frames(name, device_kind='coyote'):
+def load_waveform_frames(name, device_kind='coyote', settings=None):
     """Return validated frames from the device's presets (including Pure)."""
     try:
-        frames = WAVEFORMS_BY_DEVICE[device_kind][name]
+        frames = ((settings or {}).get('_waveform_frames', {}).get(device_kind, {}).get(name)
+                  or WAVEFORMS_BY_DEVICE[device_kind][name])
     except (KeyError, TypeError) as exc:
         raise ValueError(f'未知波形：{name}') from exc
     if not frames or not all(isinstance(frame, str) and _FRAME_RE.fullmatch(frame) for frame in frames):

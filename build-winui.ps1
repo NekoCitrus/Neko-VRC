@@ -1,6 +1,7 @@
 param(
     [string]$Dotnet = "$PSScriptRoot\.tools\dotnet\dotnet.exe",
     [string]$Python = "$PSScriptRoot\.venv\Scripts\python.exe",
+    [string]$ProductDirectory,
     [switch]$SkipValidation
 )
 $ErrorActionPreference = 'Stop'
@@ -11,15 +12,18 @@ $project = Join-Path $PSScriptRoot 'desktop\NekoVRC.WinUI\NekoVRC.WinUI.csproj'
 $releaseVersion = [string]$projectXml.Project.PropertyGroup.Version
 if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version' }
 # Versioned product directories keep final packages separate from intermediates.
-$productRoot = Join-Path $PSScriptRoot "products\v$releaseVersion"
+$productRoot = if ($ProductDirectory) { [System.IO.Path]::GetFullPath($ProductDirectory) } else { Join-Path $PSScriptRoot "products\v$releaseVersion" }
 $releaseDir = Join-Path $productRoot 'Neko-VRC-WinUI-win-x64'
+$targetExecutable = Join-Path $releaseDir 'Neko-VRC.exe'
+$runningProduct = Get-Process -Name 'Neko-VRC' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $targetExecutable }
+if ($runningProduct) { throw 'Target product is running. Exit it first, or use -ProductDirectory for a separate preview build.' }
 $backendBuild = Join-Path $PSScriptRoot 'build\winui-backend'
 $publishObj = Join-Path (Split-Path -Parent $project) 'obj\ReleasePackaging\'
 Push-Location $PSScriptRoot
 try {
     & $Dotnet publish $project -c Release -r win-x64 --self-contained true -o $releaseDir --nologo '-p:Platform=x64' "-p:MSBuildProjectExtensionsPath=$publishObj" '-p:IntermediateOutputPath=obj/ReleasePackaging/Release/'
     if ($LASTEXITCODE -ne 0) { throw 'WinUI publish failed' }
-    foreach ($markup in @('Neko-VRC.pri', 'App.xbf', 'MainWindow.xbf', 'Views\GeneralPage.xbf', 'Views\DevicePage.xbf', 'Views\DeviceView.xbf', 'Views\DebugPage.xbf', 'Views\AboutPage.xbf')) {
+    foreach ($markup in @('Neko-VRC.pri', 'App.xbf', 'MainWindow.xbf', 'Views\GeneralPage.xbf', 'Views\DevicePage.xbf', 'Views\DeviceView.xbf', 'Views\DebugPage.xbf', 'Views\AboutPage.xbf', 'Views\WaveformsPage.xbf')) {
         if (-not (Test-Path -LiteralPath (Join-Path $releaseDir $markup))) { throw "Missing compiled XAML: $markup" }
     }
     & $Python -m PyInstaller --clean --noconfirm --distpath (Join-Path $backendBuild 'dist') --workpath (Join-Path $backendBuild 'work') neko_vrc.spec

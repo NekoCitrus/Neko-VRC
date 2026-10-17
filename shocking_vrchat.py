@@ -499,11 +499,11 @@ class DeviceRuntime:
                 continue
             channel_key = f'channel_{handler.channel.lower()}'
             next_config = settings['dglab3'][handler.device_kind][channel_key]
+            handler.SETTINGS = settings
             if handler.shock_settings != next_config:
                 await handler.hot_update(next_config)
                 for address, binding in handler.osc_bindings():
                     self.dispatcher.map(address, handler.osc_handler, binding)
-            handler.SETTINGS = settings
             handler.set_chatbox_manager(self.chatbox_manager)
 
         for connection in srv.get_ws_connections():

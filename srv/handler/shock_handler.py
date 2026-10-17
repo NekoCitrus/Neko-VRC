@@ -76,7 +76,7 @@ class ShockHandler(BaseHandler):
         self.depth_config = channel_settings['depth']
         default_waveform = WAVEFORM_NAMES_BY_DEVICE[self.device_kind][0]
         self.waveform = self.depth_config.get('waveform', default_waveform)
-        self.wave_frames = load_waveform_frames(self.waveform, self.device_kind)
+        self.wave_frames = load_waveform_frames(self.waveform, self.device_kind, self.SETTINGS)
         self.wave_frame_index = 0
 
     def osc_bindings(self):

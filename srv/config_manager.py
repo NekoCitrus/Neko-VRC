@@ -232,7 +232,7 @@ def migrate_sps_schema(settings, basic_settings):
             default_depth = DEFAULT_SETTINGS['dglab3'][device_kind][channel_name]['depth']
             if not isinstance(frequency, int) or not 0 <= frequency <= 255:
                 frequency = default_depth['freq_ms']
-            if waveform not in WAVEFORM_NAMES_BY_DEVICE[device_kind]:
+            if waveform not in WAVEFORM_NAMES_BY_DEVICE[device_kind] and waveform not in settings.get('_waveform_frames', {}).get(device_kind, {}):
                 waveform = default_depth['waveform']
             migrated_runtime[device_kind][channel_name] = {
                 'depth': {'freq_ms': frequency, 'waveform': waveform},
@@ -355,7 +355,7 @@ def validate_config(settings, basic_settings):
             if not isinstance(frequency, int) or not 0 <= frequency <= 255:
                 raise ValueError(f'{path}.depth.freq_ms 必须是 0~255 之间的整数。')
             waveform = settings['dglab3'][device_kind][channel_name]['depth']['waveform']
-            if waveform not in WAVEFORM_NAMES_BY_DEVICE[device_kind]:
+            if waveform not in WAVEFORM_NAMES_BY_DEVICE[device_kind] and waveform not in settings.get('_waveform_frames', {}).get(device_kind, {}):
                 raise ValueError(f'{path}.depth.waveform 不是有效波形。')
 
     try:
@@ -403,6 +403,8 @@ class ConfigManager:
         self.config_dir = Path(config_dir)
         self.path = self.config_dir / CONFIG_FILENAME
         self.migrated_from = None
+        from srv.waveform_library import WaveformLibrary
+        self.waveform_library = WaveformLibrary(self.config_dir)
 
     def _new_config(self):
         settings = copy.deepcopy(DEFAULT_SETTINGS)
@@ -457,7 +459,7 @@ class ConfigManager:
             else:
                 settings, basic = self._new_config()
 
-        settings, basic = migrate_sps_schema(settings, basic)
+        settings, basic = migrate_sps_schema(self.waveform_library.attach(settings), basic)
         if settings['ws'].get('master_uuid') is None:
             settings['ws']['master_uuid'] = str(uuid.uuid4())
         if settings['api'].get('token') is None:
@@ -472,6 +474,8 @@ class ConfigManager:
         settings['version'] = CONFIG_FILE_VERSION
         basic_settings['version'] = CONFIG_FILE_VERSION
         validate_config(settings, basic_settings)
+        # Frames live in the profile's waveform manifest, not settings or IPC.
+        settings.pop('_waveform_frames', None)
         self.config_dir.mkdir(parents=True, exist_ok=True)
         document = {
             'version': CONFIG_FILE_VERSION,
