@@ -202,7 +202,7 @@ public partial class MainWindow : Window
         await scanDevice.ScanAsync(() => Task.FromResult(new JsonArray()));
         foreach (var device in _vm.Devices) foreach (var channel in device.Channels) {
             if (!channel.SocketEnabled || !channel.PlugEnabled || !channel.ExtraEnabled ||
-                channel.PcsEnabled != (device.Kind == "coyote") || channel.LmsEnabled != (device.Kind == "opossum")) throw new Exception("默认开关错误。");
+                channel.PcsEnabled || channel.LmsEnabled) throw new Exception("默认开关错误。");
         }
         if (TryFindResource("DefaultComboBoxStyle") is not System.Windows.Style || TryFindResource("CardBackgroundFillColorDefaultBrush") is not Brush) throw new Exception("Fluent theme resources were not loaded.");
         if (WindowStyle != WindowStyle.SingleBorderWindow || ResizeMode != ResizeMode.CanResize || AllowsTransparency) throw new Exception("Native window frame was not preserved.");

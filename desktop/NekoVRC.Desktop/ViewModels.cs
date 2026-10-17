@@ -63,8 +63,8 @@ public sealed class ChannelViewModel : Observable
         _basic = (JsonObject)basic.DeepClone(); _runtime = (JsonObject)runtime.DeepClone();
         SocketEnabled = basic["socket_enabled"]?.GetValue<bool>() ?? true;
         PlugEnabled = basic["plug_enabled"]?.GetValue<bool>() ?? true;
-        PcsEnabled = basic["pcs_enabled"]?.GetValue<bool>() ?? kind == "coyote";
-        LmsEnabled = basic["lms_enabled"]?.GetValue<bool>() ?? kind == "opossum";
+        PcsEnabled = basic["pcs_enabled"]?.GetValue<bool>() ?? false;
+        LmsEnabled = basic["lms_enabled"]?.GetValue<bool>() ?? false;
         ExtraEnabled = basic["extra_parameters"]!["enabled"]!.GetValue<bool>();
         SocketZone = basic["socket_zone"]!.GetValue<string>(); PlugZone = basic["plug_zone"]!.GetValue<string>();
         Limit = basic["strength_limit"]!.ToString(); Waveform = runtime["depth"]!["waveform"]!.GetValue<string>();

@@ -53,6 +53,10 @@ def make_settings():
             device_kind: {
                 'channel_a': {
                     **default_trigger_switches(device_kind),
+                    # Explicit opt-ins for fallback-engine behavior tests;
+                    # product defaults are checked by ConfigManager/UI tests.
+                    'pcs_enabled': device_kind == 'coyote',
+                    'lms_enabled': device_kind == 'opossum',
                     'socket_zone': 'TestSocket',
                     'plug_zone': 'Test',
                     'extra_parameters': {
@@ -542,7 +546,7 @@ class ShockHandlerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await handler.stop_background_jobs()
 
-    async def test_lms_fallback_is_automatically_bound_only_for_opossum(self):
+    async def test_lms_binding_follows_explicit_fixture_opt_in(self):
         for kind in ('coyote', 'opossum'):
             handler = ShockHandler(make_settings(), FakeDGConnection(), 'A', device_kind=kind)
             self.assertEqual(LMS_PROXIMITY_ADDRESS in dict(handler.osc_bindings()), kind == 'opossum')

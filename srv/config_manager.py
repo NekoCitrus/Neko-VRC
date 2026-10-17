@@ -29,8 +29,8 @@ def default_trigger_switches(device_kind):
     return {
         'socket_enabled': True,
         'plug_enabled': True,
-        'pcs_enabled': device_kind == 'coyote',
-        'lms_enabled': device_kind == 'opossum',
+        'pcs_enabled': False,
+        'lms_enabled': False,
     }
 
 DEFAULT_BASIC_SETTINGS = {

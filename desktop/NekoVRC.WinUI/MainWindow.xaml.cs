@@ -428,7 +428,11 @@ public sealed partial class MainWindow : Window
         var savedAppDevice = new DeviceViewModel("coyote", ViewModel, new JsonObject { ["mode"] = "app", ["address"] = "", ["model"] = "coyote3" });
         if (savedAppDevice.Mode != "app") throw new Exception("Saved App mode was overwritten by the new default.");
         foreach (var device in ViewModel.Devices) foreach (var channel in device.Channels) {
-            if (!channel.SocketEnabled || !channel.PlugEnabled || !channel.ExtraEnabled || channel.PcsEnabled != (device.Kind == "coyote") || channel.LmsEnabled != (device.Kind == "opossum")) throw new Exception("Channel defaults are wrong.");
+            if (!channel.SocketEnabled || !channel.PlugEnabled || !channel.ExtraEnabled || channel.PcsEnabled || channel.LmsEnabled) throw new Exception("Channel defaults are wrong.");
+            var missingSwitches = channel.Export();
+            missingSwitches.basic.Remove("pcs_enabled"); missingSwitches.basic.Remove("lms_enabled");
+            var missingModel = new ChannelViewModel(channel.Name[..1], device.Kind, missingSwitches.basic, missingSwitches.runtime, new JsonArray(channel.Waveforms.Select(w => (JsonNode?)JsonValue.Create(w)).ToArray()));
+            if (missingModel.PcsEnabled || missingModel.LmsEnabled) throw new Exception("Missing fallback fields must also default off in the frontend.");
         }
         if (!ExtendsContentIntoTitleBar || Navigation.GetType() != typeof(NavigationView)) throw new Exception("Stock WinUI navigation/title bar missing.");
         if (AppWindow.Presenter is not OverlappedPresenter presenter || presenter.PreferredMinimumWidth != (int)Math.Ceiling(MinimumWidth * Root.XamlRoot.RasterizationScale) || presenter.PreferredMinimumHeight != (int)Math.Ceiling(MinimumHeight * Root.XamlRoot.RasterizationScale)) throw new Exception("Native minimum window dimensions are not set.");

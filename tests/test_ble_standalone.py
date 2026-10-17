@@ -40,6 +40,8 @@ class CoyoteFirmware(FakeClient):
 class StandaloneCoyoteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.settings = apply_basic_settings(copy.deepcopy(DEFAULT_SETTINGS), copy.deepcopy(DEFAULT_BASIC_SETTINGS))
+        # Explicit PCS opt-in for the standalone routing regression below.
+        self.settings['dglab3']['coyote']['channel_a']['pcs_enabled'] = True
         self.settings['chatbox']['enable'] = False
         self.runtime = core.DeviceRuntime(self.settings)
         self.runtime.dispatcher = self.runtime._build_dispatcher()

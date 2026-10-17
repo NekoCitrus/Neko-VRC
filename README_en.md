@@ -98,7 +98,7 @@ Each device channel has five independent source checkboxes. Only checked sources
 - **PCS:** always maps `/avatar/parameters/pcs/contact/proximity` through distance when enabled, competing with other enabled sources for the maximum.
 - **LMS:** uses `/avatar/parameters/lms/contact/proximity` as a distance fallback when the selected Plug depth is zero.
 
-Socket, Plug, and extra parameters/map events default to enabled for all channels. PCS defaults to enabled for Coyote A/B and disabled for Opossum A/B; LMS defaults to disabled for Coyote A/B and enabled for Opossum A/B.
+Socket, Plug, and extra parameters/map events default to enabled for all channels. PCS and LMS default to disabled for both devices' A/B channels. This applies to new configurations and missing fields; explicitly saved choices are preserved. Either source can still be enabled per channel.
 
 The maximum current value wins and linearly scales that device channel's waveform amplitude. There is no manual trigger-mode selector.
 

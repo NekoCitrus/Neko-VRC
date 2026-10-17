@@ -132,10 +132,33 @@ class ConfigManagerTests(unittest.TestCase):
             for kind in ('coyote', 'opossum'):
                 for channel in ('channel_a', 'channel_b'):
                     config = basic['dglab3'][kind][channel]
+                    self.assertFalse(config['pcs_enabled'])
+                    self.assertFalse(config['lms_enabled'])
                     for field, expected in default_trigger_switches(kind).items():
                         self.assertIs(config[field], expected)
                         self.assertIs(runtime['dglab3'][kind][channel][field], expected)
                     self.assertTrue(config['extra_parameters']['enabled'])
+
+    def test_fallback_defaults_missing_fields_and_explicit_choices_all_channels(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = ConfigManager(app_dir=root, config_dir=root)
+            settings, basic = manager.load()
+            for kind in ('coyote', 'opossum'):
+                for name in ('channel_a', 'channel_b'):
+                    basic['dglab3'][kind][name].update(pcs_enabled=True, lms_enabled=True)
+            manager.save(settings, basic)
+            saved_settings, saved_basic = manager.load()
+            for kind in ('coyote', 'opossum'):
+                for name in ('channel_a', 'channel_b'):
+                    config = saved_basic['dglab3'][kind][name]
+                    self.assertTrue(config['pcs_enabled'])
+                    self.assertTrue(config['lms_enabled'])
+                    del config['pcs_enabled'], config['lms_enabled']
+            runtime = apply_basic_settings(saved_settings, saved_basic)
+            for kind in ('coyote', 'opossum'):
+                for name in ('channel_a', 'channel_b'):
+                    self.assertFalse(runtime['dglab3'][kind][name]['pcs_enabled'])
+                    self.assertFalse(runtime['dglab3'][kind][name]['lms_enabled'])
 
     def test_source_switches_survive_save_load_and_old_extra_switch_is_preserved(self):
         with tempfile.TemporaryDirectory() as root:
@@ -653,6 +676,7 @@ class OSCQueryServiceTests(unittest.TestCase):
 
     def test_receiver_announces_pcs_without_the_extra_switch(self):
         service = self.make_service()
+        service.settings['dglab3']['coyote']['channel_a']['pcs_enabled'] = True
         for kind in ('coyote', 'opossum'):
             for channel in ('channel_a', 'channel_b'):
                 service.settings['dglab3'][kind][channel]['extra_parameters']['enabled'] = False
@@ -662,6 +686,7 @@ class OSCQueryServiceTests(unittest.TestCase):
 
     def test_lms_fallback_is_announced_when_extra_parameters_are_disabled(self):
         service = self.make_service()
+        service.settings['dglab3']['opossum']['channel_a']['lms_enabled'] = True
         for kind in ('coyote', 'opossum'):
             for channel in ('channel_a', 'channel_b'):
                 service.settings['dglab3'][kind][channel]['extra_parameters']['enabled'] = False
@@ -1106,6 +1131,9 @@ class ServiceControllerTests(unittest.TestCase):
 
     def test_real_udp_source_checkboxes_hot_update_without_restarting_runtime(self):
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        for channel in ('channel_a', 'channel_b'):
+            basic['dglab3']['coyote'][channel]['pcs_enabled'] = True
+            basic['dglab3']['opossum'][channel]['lms_enabled'] = True
         disabled = basic['dglab3']['opossum']['channel_a']
         disabled.update(socket_enabled=False, plug_enabled=False, pcs_enabled=False, lms_enabled=False)
         disabled['extra_parameters']['enabled'] = False
@@ -1239,6 +1267,8 @@ class ServiceControllerTests(unittest.TestCase):
 
     def test_real_udp_lms_gate_is_opossum_only_and_channel_specific(self):
         basic = copy.deepcopy(DEFAULT_BASIC_SETTINGS)
+        for channel in ('channel_a', 'channel_b'):
+            basic['dglab3']['opossum'][channel]['lms_enabled'] = True
         for channel in ('channel_a', 'channel_b'):
             basic['dglab3']['coyote'][channel].update({'plug_zone': 'Never', 'socket_zone': 'Never'})
         basic['dglab3']['opossum']['channel_a']['plug_zone'] = 'First'
